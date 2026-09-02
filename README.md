@@ -236,14 +236,4 @@ Schema em `agents/schema.sql`. Tabelas principais:
 
 ---
 
-## Variáveis de ambiente
 
-Ver `.env.example`. Principais:
-
-| Variável | Padrão | Descrição |
-|---|---|---|
-| `OLLAMA_URL` | `http://localhost:11434` | URL do servidor Ollama |
-| `MINAS_MODEL` | `llama3.1:70b` | Modelo LLM local |
-| `CN_NSSMF_URL` | `http://cn-nssmf:8001` | URL do agente CN-NSSMF |
-| `RAN_NSSMF_URL` | `http://ran-nssmf:8002` | URL do agente RAN-NSSMF |
-| `POSTGRES_HOST` | `postgres` | Host do PostgreSQL |
