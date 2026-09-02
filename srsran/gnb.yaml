@@ -1,0 +1,58 @@
+# srsRAN gNB — MINAS testbed
+
+#   GNB_BIND_ADDR  > IP do servidor do lab na rede de fronthaul (ex: 192.168.x.x)
+#   RU_MAC         > MAC da RU Liteon Flexi  (ver: ip link show)
+#   DU_MAC         > MAC da placa Intel DPDK do servidor (ver: ip link show)
+#   FRONTHAUL_IF   > nome da interface de rede conectada à RU (ver: ip link show)
+#   DL_ARFCN       > confirmar com o Miguel (depende da frequência configurada na Liteon)
+#   BAND           > confirmar com o Miguel
+
+gnb_id: 1
+ran_node_name: minas-gnb
+
+amf:
+  addr: 127.0.0.1       # AMF roda no mesmo servidor via Docker (porta 38412 publicada no host)
+  bind_addr: GNB_BIND_ADDR
+
+ru_ofh:
+  t1a_max_cp_dl: 500
+  t1a_min_cp_dl: 250
+  t1a_max_cp_ul: 500
+  t1a_min_cp_ul: 250
+  t1a_max_up: 300
+  t1a_min_up: 85
+  ta4_max: 300
+  ta4_min: 85
+  is_prach_cp_enabled: true
+  ignore_ecpri_seq_id_field: true
+  cells:
+    - network_interface: FRONTHAUL_IF
+      ru_mac_addr: "RU_MAC"
+      du_mac_addr: "DU_MAC"
+      vlan_tag_cp: 1
+      vlan_tag_up: 1
+
+cell_cfg:
+  dl_arfcn: DL_ARFCN
+  band: BAND
+  channel_bandwidth_MHz: 20
+  common_scs: 30
+  plmn: "00101"
+  tac: 1
+  pci: 1
+  nof_antennas_ul: 1
+  nof_antennas_dl: 1
+
+slicing:
+  - sst: 1
+  - sst: 2
+
+log:
+  filename: /tmp/gnb.log
+  all_level: info
+
+pcap:
+  mac_filename: /tmp/gnb_mac.pcap
+  mac_enable: false
+  ngap_filename: /tmp/gnb_ngap.pcap
+  ngap_enable: true

@@ -1,0 +1,25 @@
+logger:
+  file: /opt/open5gs/var/log/open5gs/nssf.log
+
+sbi:
+  server:
+    no_tls: true
+  client:
+    no_tls: true
+
+nssf:
+  sbi:
+    - dev: eth0
+      port: 7777
+  nsi:
+    - uri: http://nrf:7777
+      s_nssai:
+        sst: 1
+    - uri: http://nrf:7777
+      s_nssai:
+        sst: 2
+
+scp:
+  sbi:
+    - name: scp
+      port: 7777

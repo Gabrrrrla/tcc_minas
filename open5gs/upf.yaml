@@ -1,0 +1,23 @@
+logger:
+  file: /opt/open5gs/var/log/open5gs/upf.log
+
+upf:
+  pfcp:
+    - dev: eth0
+  gtpu:
+    - dev: eth0
+      advertise: 127.0.0.1
+  subnet:
+    - addr: 10.45.0.1/16
+      dnn: internet
+      dev: ogstun
+    - addr: 10.46.0.1/16
+      dnn: slice2
+      dev: ogstun2
+  metrics:
+    - dev: eth0
+      port: 9090
+
+smf:
+  pfcp:
+    - name: smf

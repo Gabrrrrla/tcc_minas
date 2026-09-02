@@ -1,0 +1,18 @@
+logger:
+  file: /opt/open5gs/var/log/open5gs/ausf.log
+
+sbi:
+  server:
+    no_tls: true
+  client:
+    no_tls: true
+
+ausf:
+  sbi:
+    - dev: eth0
+      port: 7777
+
+scp:
+  sbi:
+    - name: scp
+      port: 7777
