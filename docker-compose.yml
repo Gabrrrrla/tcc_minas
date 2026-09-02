@@ -1,0 +1,239 @@
+networks:
+  minas-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.11.0.0/24
+
+services:
+
+  mongodb:
+    image: mongo:4.4
+    container_name: mongodb
+    hostname: mongo
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.2
+        aliases:
+          - mongo
+    volumes:
+      - mongodb_data:/data/db
+
+  provision:
+    image: mongo:4.4
+    container_name: provision
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.3
+    volumes:
+      - ./scripts:/scripts
+    entrypoint: >
+      bash -c "
+        until mongo --host 10.11.0.2 --eval 'db.runCommand({ping:1})' > /dev/null 2>&1; do
+          echo 'Waiting for MongoDB...'; sleep 2;
+        done;
+        mongo --nodb /scripts/provision.js
+      "
+    depends_on: [mongodb]
+    restart: "no"
+
+  nrf:
+    image: gradiant/open5gs:2.6.4
+    container_name: nrf
+    command: open5gs-nrfd
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.10
+    volumes:
+      - ./open5gs/nrf.yaml:/opt/open5gs/etc/open5gs/nrf.yaml
+
+  ausf:
+    image: gradiant/open5gs:2.6.4
+    container_name: ausf
+    command: open5gs-ausfd
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.11
+    volumes:
+      - ./open5gs/ausf.yaml:/opt/open5gs/etc/open5gs/ausf.yaml
+    depends_on: [nrf]
+
+  udm:
+    image: gradiant/open5gs:2.6.4
+    container_name: udm
+    command: open5gs-udmd
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.12
+    volumes:
+      - ./open5gs/udm.yaml:/opt/open5gs/etc/open5gs/udm.yaml
+    depends_on: [nrf]
+
+  udr:
+    image: gradiant/open5gs:2.6.4
+    container_name: udr
+    command: open5gs-udrd
+    restart: on-failure
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.13
+    volumes:
+      - ./open5gs/udr.yaml:/opt/open5gs/etc/open5gs/udr.yaml
+    depends_on: [mongodb, nrf]
+
+  pcf:
+    image: gradiant/open5gs:2.6.4
+    container_name: pcf
+    command: open5gs-pcfd
+    restart: on-failure
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.14
+    volumes:
+      - ./open5gs/pcf.yaml:/opt/open5gs/etc/open5gs/pcf.yaml
+    depends_on: [mongodb, nrf]
+
+  bsf:
+    image: gradiant/open5gs:2.6.4
+    container_name: bsf
+    command: open5gs-bsfd
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.15
+    volumes:
+      - ./open5gs/bsf.yaml:/opt/open5gs/etc/open5gs/bsf.yaml
+    depends_on: [nrf]
+
+  nssf:
+    image: gradiant/open5gs:2.6.4
+    container_name: nssf
+    command: open5gs-nssfd
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.16
+    volumes:
+      - ./open5gs/nssf.yaml:/opt/open5gs/etc/open5gs/nssf.yaml
+    depends_on: [nrf]
+
+  scp:
+    image: gradiant/open5gs:2.6.4
+    container_name: scp
+    command: open5gs-scpd
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.17
+    volumes:
+      - ./open5gs/scp.yaml:/opt/open5gs/etc/open5gs/scp.yaml
+    depends_on: [nrf]
+
+  amf:
+    image: gradiant/open5gs:2.6.4
+    container_name: amf
+    command: open5gs-amfd
+    ports:
+      - "38412:38412/sctp"
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.20
+    volumes:
+      - ./open5gs/amf.yaml:/opt/open5gs/etc/open5gs/amf.yaml
+    depends_on: [nrf, scp]
+
+  smf:
+    image: gradiant/open5gs:2.6.4
+    container_name: smf
+    command: open5gs-smfd
+    restart: on-failure
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.21
+    volumes:
+      - ./open5gs/smf.yaml:/opt/open5gs/etc/open5gs/smf.yaml
+    depends_on: [nrf, scp]
+
+  upf:
+    image: gradiant/open5gs:2.6.4
+    container_name: upf
+    command: >
+      sh -c "ip tuntap add name ogstun mode tun &&
+             ip addr add 10.45.0.1/16 dev ogstun &&
+             ip link set ogstun up &&
+             ip tuntap add name ogstun2 mode tun &&
+             ip addr add 10.46.0.1/16 dev ogstun2 &&
+             ip link set ogstun2 up &&
+             open5gs-upfd"
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    ports:
+      - "2152:2152/udp"
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.22
+    volumes:
+      - ./open5gs/upf.yaml:/opt/open5gs/etc/open5gs/upf.yaml
+    depends_on: [smf]
+
+  webui:
+    image: gradiant/open5gs-webui:2.6.4
+    container_name: webui
+    ports:
+      - "3000:3000"
+    environment:
+      - DB_URI=mongodb://10.11.0.2/open5gs
+      - NEXT_PUBLIC_APP_URL=http://localhost:9999
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.30
+    depends_on: [mongodb]
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: prometheus
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.50
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on: [amf, smf, upf]
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: grafana
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.51
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=minas
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on: [prometheus]
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_DB: minas
+      POSTGRES_USER: minas
+      POSTGRES_PASSWORD: minas
+    ports:
+      - "5432:5432"
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.40
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./agents/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+
+volumes:
+  mongodb_data:
+  grafana_data:
+  postgres_data:
