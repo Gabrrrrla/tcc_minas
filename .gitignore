@@ -1,5 +1,6 @@
 # environment — nunca commitar
 .env
+.env.example
 
 # Claude Code
 .claude/
