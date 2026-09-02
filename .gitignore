@@ -1,4 +1,16 @@
-*.txt
-*.md
-*.pdf
+# environment — nunca commitar
+.env
+
+# Claude Code
 .claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Logs
+*.log
+*.pcap

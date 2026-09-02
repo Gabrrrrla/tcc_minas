@@ -1,14 +1,14 @@
 """
 Tool definitions for the MINAS Orchestrator.
 
-TOOL_SCHEMAS  — list of tool dicts passed to the Anthropic API
+TOOL_SCHEMAS  — list of tool dicts passed to Ollama (/api/chat)
 dispatch_tool — routes a tool_use call to the correct handler
 
 The orchestrator has 5 tools:
-  record_intent       — persist intent to PostgreSQL (intents table)
-  get_sla_status      — read latest KPIs for a slice from PostgreSQL
-  invoke_cn_nssmf     — send a directive to the CN-NSSMF agent
-  invoke_ran_nssmf    — send a directive to the RAN-NSSMF agent
+  record_intent        — persist intent to PostgreSQL (intents table)
+  get_sla_status       — read latest KPIs for a slice from PostgreSQL
+  invoke_cn_nssmf      — send a directive to the CN-NSSMF agent
+  invoke_ran_nssmf     — send a directive to the RAN-NSSMF agent
   update_intent_status — update intent lifecycle in the database
 """
 
@@ -26,98 +26,113 @@ CN_NSSMF_URL  = os.getenv("CN_NSSMF_URL",  "http://cn-nssmf:8001")
 RAN_NSSMF_URL = os.getenv("RAN_NSSMF_URL", "http://ran-nssmf:8002")
 
 # ---------------------------------------------------------------------------
-# Tool schemas (passed verbatim to anthropic.messages.create)
+# Tool schemas — Ollama format: {type: "function", function: {name, description, parameters}}
 # ---------------------------------------------------------------------------
 
 TOOL_SCHEMAS: list[dict] = [
     {
-        "name": "record_intent",
-        "description": (
-            "Persist a decoded operator intent to the database before any action is taken. "
-            "Must be called as the first step after receiving a new intent."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "raw_text":        {"type": "string",  "description": "Original natural-language intent"},
-                "sst":             {"type": "integer", "description": "Target slice SST (1 or 2)"},
-                "target_thp_mbps": {"type": "number",  "description": "Requested throughput guarantee in Mbps"},
-                "window_start":    {"type": "string",  "description": "ISO-8601 start of enforcement window (optional)"},
-                "window_end":      {"type": "string",  "description": "ISO-8601 end of enforcement window (optional)"},
-            },
-            "required": ["raw_text", "sst"],
-        },
-    },
-    {
-        "name": "get_sla_status",
-        "description": (
-            "Read the latest KPIs and SLA compliance state for a given slice "
-            "from the MINAS database (core_kpis + slice_load tables)."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "sst": {"type": "integer", "description": "Slice SST to query (1 or 2)"},
-            },
-            "required": ["sst"],
-        },
-    },
-    {
-        "name": "invoke_cn_nssmf",
-        "description": (
-            "Send a directive to the CN-NSSMF agent. "
-            "Use for QoS reconfiguration (GBR/MBR), NWDAF queries, or policy revert."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "intent_id": {"type": "integer", "description": "ID of the intent being processed"},
-                "action": {
-                    "type": "string",
-                    "enum": ["apply_qos", "revert_qos", "query_nwdaf", "check_sla"],
-                    "description": "Action to perform",
+        "type": "function",
+        "function": {
+            "name": "record_intent",
+            "description": (
+                "Persist a decoded operator intent to the database before any action is taken. "
+                "Must be called as the first step after receiving a new intent."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "raw_text":        {"type": "string",  "description": "Original natural-language intent"},
+                    "sst":             {"type": "integer", "description": "Target slice SST (1 or 2)"},
+                    "target_thp_mbps": {"type": "number",  "description": "Requested throughput guarantee in Mbps"},
+                    "window_start":    {"type": "string",  "description": "ISO-8601 start of enforcement window (optional)"},
+                    "window_end":      {"type": "string",  "description": "ISO-8601 end of enforcement window (optional)"},
                 },
-                "sst":             {"type": "integer", "description": "Target slice SST"},
-                "target_thp_mbps": {"type": "number",  "description": "Required throughput in Mbps (for apply_qos)"},
-                "window_end":      {"type": "string",  "description": "ISO-8601 end of window (for apply_qos with time constraint)"},
+                "required": ["raw_text", "sst"],
             },
-            "required": ["intent_id", "action", "sst"],
         },
     },
     {
-        "name": "invoke_ran_nssmf",
-        "description": (
-            "Send a directive to the RAN-NSSMF agent. "
-            "Use for PRB allocation adjustment or revert."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "intent_id": {"type": "integer", "description": "ID of the intent being processed"},
-                "action": {
-                    "type": "string",
-                    "enum": ["apply_resources", "revert_resources", "check_sla"],
-                    "description": "Action to perform",
+        "type": "function",
+        "function": {
+            "name": "get_sla_status",
+            "description": (
+                "Read the latest KPIs and SLA compliance state for a given slice "
+                "from the MINAS database (core_kpis + slice_load tables)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sst": {"type": "integer", "description": "Slice SST to query (1 or 2)"},
                 },
-                "sst":             {"type": "integer", "description": "Target slice SST"},
-                "target_thp_mbps": {"type": "number",  "description": "Required throughput in Mbps (for apply_resources)"},
+                "required": ["sst"],
             },
-            "required": ["intent_id", "action", "sst"],
         },
     },
     {
-        "name": "update_intent_status",
-        "description": "Update the lifecycle status of an intent in the database.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "intent_id": {"type": "integer", "description": "Intent ID to update"},
-                "status": {
-                    "type": "string",
-                    "enum": ["decomposed", "negotiating", "applied", "degraded", "failed", "reverted"],
+        "type": "function",
+        "function": {
+            "name": "invoke_cn_nssmf",
+            "description": (
+                "Send a directive to the CN-NSSMF agent. "
+                "Use for QoS reconfiguration (GBR/MBR), NWDAF queries, or policy revert."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "intent_id": {"type": "integer", "description": "ID of the intent being processed"},
+                    "action": {
+                        "type": "string",
+                        "enum": ["apply_qos", "revert_qos", "query_nwdaf", "check_sla"],
+                        "description": "Action to perform",
+                    },
+                    "sst":             {"type": "integer", "description": "Target slice SST"},
+                    "target_thp_mbps": {"type": "number",  "description": "Required throughput in Mbps (for apply_qos)"},
+                    "window_end":      {"type": "string",  "description": "ISO-8601 end of window (for apply_qos with time constraint)"},
                 },
+                "required": ["intent_id", "action", "sst"],
             },
-            "required": ["intent_id", "status"],
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "invoke_ran_nssmf",
+            "description": (
+                "Send a directive to the RAN-NSSMF agent. "
+                "Use for PRB allocation adjustment or revert."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "intent_id": {"type": "integer", "description": "ID of the intent being processed"},
+                    "action": {
+                        "type": "string",
+                        "enum": ["apply_resources", "revert_resources", "check_sla"],
+                        "description": "Action to perform",
+                    },
+                    "sst":             {"type": "integer", "description": "Target slice SST"},
+                    "target_thp_mbps": {"type": "number",  "description": "Required throughput in Mbps (for apply_resources)"},
+                },
+                "required": ["intent_id", "action", "sst"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_intent_status",
+            "description": "Update the lifecycle status of an intent in the database.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "intent_id": {"type": "integer", "description": "Intent ID to update"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["decomposed", "negotiating", "applied", "degraded", "failed", "reverted"],
+                    },
+                },
+                "required": ["intent_id", "status"],
+            },
         },
     },
 ]

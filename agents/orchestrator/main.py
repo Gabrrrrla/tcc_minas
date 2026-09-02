@@ -5,22 +5,23 @@ directives, and coordinates CN-NSSMF and RAN-NSSMF via tool-calling.
 
 Paradigm : ReAct (Reasoning and Acting) — no fine-tuning
 Domain   : injected via system prompt + tool descriptions
-Model    : configurable via MINAS_MODEL env var (default: claude-opus-4-7)
+Model    : configurable via MINAS_MODEL env var (default: llama3.1:70b)
+Backend  : Ollama (local inference server, no external API dependency)
 """
 
 import json
 import os
 import sys
 
-import anthropic
+import requests
 from dotenv import load_dotenv
 
-from db import get_db_conn
 from tools import TOOL_SCHEMAS, dispatch_tool
 
 load_dotenv()
 
-MODEL = os.getenv("MINAS_MODEL", "claude-opus-4-7")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+MODEL      = os.getenv("MINAS_MODEL", "llama3.1:70b")
 
 SYSTEM_PROMPT = """You are the MINAS Orchestrator, the single coordination point of a
 Multi-Agent System for autonomous 5G network slice management.
@@ -56,6 +57,21 @@ Multi-Agent System for autonomous 5G network slice management.
 """
 
 
+def _call_ollama(messages: list[dict]) -> dict:
+    resp = requests.post(
+        f"{OLLAMA_URL}/api/chat",
+        json={
+            "model":   MODEL,
+            "messages": messages,
+            "tools":    TOOL_SCHEMAS,
+            "stream":   False,
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def run(intent_text: str) -> str:
     """
     Main ReAct loop: receives a natural-language intent and drives the
@@ -63,52 +79,48 @@ def run(intent_text: str) -> str:
     Returns a human-readable summary of the outcome.
     """
     print(f"[orchestrator] intent received: {intent_text}")
+    print(f"[orchestrator] model: {MODEL} @ {OLLAMA_URL}")
 
-    messages: list[dict] = [{"role": "user", "content": intent_text}]
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    messages: list[dict] = [
+        {"role": "system",  "content": SYSTEM_PROMPT},
+        {"role": "user",    "content": intent_text},
+    ]
 
     while True:
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            tools=TOOL_SCHEMAS,
-            messages=messages,
-        )
+        response    = _call_ollama(messages)
+        assistant   = response["message"]
+        tool_calls  = assistant.get("tool_calls") or []
 
-        # Append assistant turn
-        messages.append({"role": "assistant", "content": response.content})
+        # Append assistant turn (store only role + content for history)
+        messages.append({
+            "role":    "assistant",
+            "content": assistant.get("content") or "",
+        })
 
         # No tool calls → final answer
-        if response.stop_reason == "end_turn":
-            final_text = next(
-                (b.text for b in response.content if hasattr(b, "text")), ""
-            )
+        if not tool_calls:
+            final_text = assistant.get("content", "")
             print(f"[orchestrator] done: {final_text}")
             return final_text
 
-        # Process tool calls
+        # Process tool calls and collect results
         tool_results = []
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
+        for call in tool_calls:
+            func       = call["function"]
+            tool_name  = func["name"]
+            tool_input = json.loads(func["arguments"]) if isinstance(func["arguments"], str) else func["arguments"]
 
-            tool_name = block.name
-            tool_input = block.input
-            print(f"[orchestrator] tool_use → {tool_name}({json.dumps(tool_input)})")
-
+            print(f"[orchestrator] tool_use  → {tool_name}({json.dumps(tool_input)})")
             result = dispatch_tool(tool_name, tool_input)
             print(f"[orchestrator] tool_result ← {json.dumps(result)}")
 
-            tool_results.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": json.dumps(result),
-                }
-            )
+            tool_results.append(json.dumps(result))
 
-        messages.append({"role": "user", "content": tool_results})
+        # Feed all results back as a single user turn
+        messages.append({
+            "role":    "tool",
+            "content": "\n".join(tool_results),
+        })
 
 
 if __name__ == "__main__":
