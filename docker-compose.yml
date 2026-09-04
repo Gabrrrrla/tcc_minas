@@ -5,6 +5,22 @@ networks:
       config:
         - subnet: 10.11.0.0/24
 
+# --- shared config for the Python agents (orchestrator, cn-nssmf, collector) ---
+x-agent-build: &agent-build
+  context: .
+  dockerfile: agents/Dockerfile
+
+x-pg-env: &pg-env
+  POSTGRES_HOST: 10.11.0.40
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: minas
+  POSTGRES_USER: minas
+  POSTGRES_PASSWORD: minas
+
+x-ollama-env: &ollama-env
+  OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+  MINAS_MODEL: ${MINAS_MODEL:-llama3.1:70b}
+
 services:
 
   mongodb:
@@ -232,6 +248,64 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./agents/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+
+  cn-nssmf:
+    build: *agent-build
+    image: minas-agent:local
+    container_name: cn-nssmf
+    working_dir: /app/agents/cn-nssmf
+    command: python main.py
+    environment:
+      <<: [*pg-env, *ollama-env]
+      CN_NSSMF_PORT: "8001"
+      NWDAF_URL: http://nwdaf:8080
+      ORCHESTRATOR_URL: http://orchestrator:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8001:8001"
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.60
+    depends_on: [postgres, amf, smf, pcf]
+
+  orchestrator:
+    build: *agent-build
+    image: minas-agent:local
+    container_name: orchestrator
+    working_dir: /app/agents/orchestrator
+    command: python main.py
+    environment:
+      <<: [*pg-env, *ollama-env]
+      ORCHESTRATOR_PORT: "8000"
+      CN_NSSMF_URL: http://cn-nssmf:8001
+      RAN_NSSMF_URL: http://ran-nssmf:8002
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.55
+    depends_on: [postgres, cn-nssmf]
+
+  collector:
+    build: *agent-build
+    image: minas-agent:local
+    container_name: collector
+    working_dir: /app/agents/collector
+    command: python main.py
+    environment:
+      <<: *pg-env
+      PROMETHEUS_URL: http://prometheus:9090
+      COLLECT_INTERVAL: "${COLLECT_INTERVAL:-10}"
+      SLICES: "${SLICES:-1,2}"
+      CORE_SOURCE: "${CORE_SOURCE:-prometheus}"
+      RAN_SOURCE: "${RAN_SOURCE:-mock}"
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.61
+    depends_on: [postgres, prometheus]
 
 volumes:
   mongodb_data:

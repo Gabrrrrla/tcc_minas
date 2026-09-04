@@ -3,25 +3,24 @@ MINAS Orchestrator Agent
 Receives operator intents in natural language, decomposes them into
 directives, and coordinates CN-NSSMF and RAN-NSSMF via tool-calling.
 
-Paradigm : ReAct (Reasoning and Acting) — no fine-tuning
-Domain   : injected via system prompt + tool descriptions
-Model    : configurable via MINAS_MODEL env var (default: llama3.1:70b)
-Backend  : Ollama (local inference server, no external API dependency)
+Paradigm  : ReAct (Reasoning and Acting) — no fine-tuning
+Domain    : injected via system prompt + tool descriptions
+Backend   : Ollama (local inference server) — see agents/react.py
+Transport : HTTP POST /intent  (operator / tests)   +   CLI  (python main.py "<intent>")
 """
 
-import json
 import os
 import sys
 
-import requests
-from dotenv import load_dotenv
+# make agents/ importable (shared db.py + react.py) whether run via Docker or `cd agents/orchestrator`
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from flask import Flask, jsonify, request
+
+from react import MODEL, OLLAMA_URL, react_loop
 from tools import TOOL_SCHEMAS, dispatch_tool
 
-load_dotenv()
-
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-MODEL      = os.getenv("MINAS_MODEL", "llama3.1:70b")
+PORT = int(os.getenv("ORCHESTRATOR_PORT", "8000"))
 
 SYSTEM_PROMPT = """You are the MINAS Orchestrator, the single coordination point of a
 Multi-Agent System for autonomous 5G network slice management.
@@ -56,78 +55,39 @@ Multi-Agent System for autonomous 5G network slice management.
 5. Report final outcome (applied / degraded / failed / reverted) back to the operator.
 """
 
-
-def _call_ollama(messages: list[dict]) -> dict:
-    resp = requests.post(
-        f"{OLLAMA_URL}/api/chat",
-        json={
-            "model":   MODEL,
-            "messages": messages,
-            "tools":    TOOL_SCHEMAS,
-            "stream":   False,
-        },
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()
+app = Flask(__name__)
 
 
 def run(intent_text: str) -> str:
-    """
-    Main ReAct loop: receives a natural-language intent and drives the
-    orchestrator until the intent is fully resolved or fails.
-    Returns a human-readable summary of the outcome.
-    """
+    """Drive the ReAct loop for one natural-language intent; return the outcome text."""
     print(f"[orchestrator] intent received: {intent_text}")
     print(f"[orchestrator] model: {MODEL} @ {OLLAMA_URL}")
+    return react_loop(SYSTEM_PROMPT, intent_text, TOOL_SCHEMAS, dispatch_tool, tag="orchestrator")["final"]
 
-    messages: list[dict] = [
-        {"role": "system",  "content": SYSTEM_PROMPT},
-        {"role": "user",    "content": intent_text},
-    ]
 
-    while True:
-        response    = _call_ollama(messages)
-        assistant   = response["message"]
-        tool_calls  = assistant.get("tool_calls") or []
+@app.post("/intent")
+def intent_endpoint():
+    body = request.get_json(force=True) or {}
+    text = body.get("intent") or body.get("text")
+    if not text:
+        return jsonify({"error": "body must contain 'intent'"}), 400
+    try:
+        return jsonify({"outcome": run(text)})
+    except Exception as exc:  # surface any failure to the caller
+        return jsonify({"error": str(exc)}), 500
 
-        # Append assistant turn (store only role + content for history)
-        messages.append({
-            "role":    "assistant",
-            "content": assistant.get("content") or "",
-        })
 
-        # No tool calls → final answer
-        if not tool_calls:
-            final_text = assistant.get("content", "")
-            print(f"[orchestrator] done: {final_text}")
-            return final_text
-
-        # Process tool calls and collect results
-        tool_results = []
-        for call in tool_calls:
-            func       = call["function"]
-            tool_name  = func["name"]
-            tool_input = json.loads(func["arguments"]) if isinstance(func["arguments"], str) else func["arguments"]
-
-            print(f"[orchestrator] tool_use  → {tool_name}({json.dumps(tool_input)})")
-            result = dispatch_tool(tool_name, tool_input)
-            print(f"[orchestrator] tool_result ← {json.dumps(result)}")
-
-            tool_results.append(json.dumps(result))
-
-        # Feed all results back as a single user turn
-        messages.append({
-            "role":    "tool",
-            "content": "\n".join(tool_results),
-        })
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok", "agent": "orchestrator"})
 
 
 if __name__ == "__main__":
-    intent = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else (
-        "Aumentar a taxa de dados garantida para a fatia de streaming "
-        "de 10 Mbps para 20 Mbps entre 18h e 22h."
-    )
-    outcome = run(intent)
-    print("\n--- OUTCOME ---")
-    print(outcome)
+    if len(sys.argv) > 1:
+        # one-shot CLI mode: python main.py "<intent>"
+        print("\n--- OUTCOME ---")
+        print(run(" ".join(sys.argv[1:])))
+    else:
+        # service mode
+        print(f"[orchestrator] listening on :{PORT}  model={MODEL} @ {OLLAMA_URL}")
+        app.run(host="0.0.0.0", port=PORT)

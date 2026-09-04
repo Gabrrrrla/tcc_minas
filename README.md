@@ -79,11 +79,19 @@ tcc_II/
 │
 ├── agents/
 │   ├── schema.sql              # Schema PostgreSQL (KPIs, intents, negotiations, policies)
+│   ├── Dockerfile              # imagem única dos 3 agentes (build context = raiz)
+│   ├── db.py                   # conexão PostgreSQL — compartilhada
+│   ├── react.py                # cliente Ollama + loop ReAct — compartilhado
 │   ├── orchestrator/
-│   │   ├── main.py             # Loop ReAct + system prompt 3GPP
+│   │   ├── main.py             # HTTP (POST /intent) + CLI + system prompt 3GPP
+│   │   └── tools.py            # 5 ferramentas + dispatcher
+│   ├── cn-nssmf/               # esqueleto: servidor HTTP /directive
+│   │   ├── main.py             # Flask (POST /directive, GET /health)
 │   │   ├── tools.py            # 5 ferramentas + dispatcher
-│   │   └── db.py               # Conexão PostgreSQL
-│   ├── cn-nssmf/               # (a implementar)
+│   │   └── nwdaf_client.py     # stub das interfaces normativas da NWDAF (TS 23.288)
+│   ├── collector/              # amostrador core_kpis + ran_kpis (fonte: prometheus | o1 | mock)
+│   │   ├── main.py             # loop de coleta -> INSERT core_kpis / ran_kpis
+│   │   └── o1_client.py        # stub da interface O1/NETCONF do gNB (fonte ideal p/ RAN)
 │   └── ran-nssmf/              # (a implementar)
 │
 ├── scripts/
@@ -117,8 +125,11 @@ tcc_II/
 | upf | gradiant/open5gs:2.6.4 | 10.11.0.22 | **2152/udp** |
 | webui | gradiant/open5gs-webui:2.6.4 | 10.11.0.30 | 3000 |
 | postgres | postgres:16-alpine | 10.11.0.40 | 5432 |
+| orchestrator | build `agents/Dockerfile` | 10.11.0.55 | 8000 |
 | prometheus | prom/prometheus:v2.53.0 | 10.11.0.50 | 9090 |
 | grafana | grafana/grafana:11.1.0 | 10.11.0.51 | 3001 |
+| cn-nssmf | build `agents/Dockerfile` | 10.11.0.60 | 8001 |
+| collector | build `agents/Dockerfile` | 10.11.0.61 | — |
 
 ---
 
@@ -198,12 +209,20 @@ ollama serve               # sobe o servidor de inferência em localhost:11434
 
 ### Orquestrador (`agents/orchestrator/`)
 
-Recebe intenção em linguagem natural e conduz o loop ReAct até resolver.
+Recebe intenção em linguagem natural e conduz o loop ReAct até resolver. Roda em
+dois modos:
 
 ```bash
 cd agents/orchestrator
 pip install -r ../../requirements.txt
+
+# modo CLI (uma intenção, imprime o resultado)
 python main.py "Aumentar a taxa de dados garantida para a fatia de streaming de 10 Mbps para 20 Mbps entre 18h e 22h."
+
+# modo serviço (sem argumentos) — escuta em :8000
+python main.py
+curl -X POST localhost:8000/intent -H 'content-type: application/json' \
+  -d '{"intent": "Aumentar a taxa garantida da fatia de streaming para 20 Mbps entre 18h e 22h."}'
 ```
 
 **Ferramentas disponíveis:**
@@ -216,8 +235,65 @@ python main.py "Aumentar a taxa de dados garantida para a fatia de streaming de 
 | `invoke_ran_nssmf` | Envia diretiva ao RAN-NSSMF |
 | `update_intent_status` | Atualiza ciclo de vida da intenção |
 
-### CN-NSSMF (`agents/cn-nssmf/`) — a implementar
+### CN-NSSMF (`agents/cn-nssmf/`) — esqueleto
+
+Agente de domínio do núcleo 5G. Sobe como serviço HTTP e recebe diretivas do
+orquestrador em `POST /directive` (a ferramenta `invoke_cn_nssmf` do orquestrador
+aponta para `http://cn-nssmf:8001`). Cada diretiva dispara um loop ReAct próprio.
+
+```bash
+cd agents/cn-nssmf
+pip install -r ../../requirements.txt
+python main.py          # escuta em :8001
+
+# testar
+curl -X POST localhost:8001/directive -H 'content-type: application/json' \
+  -d '{"intent_id": 1, "action": "apply_qos", "sst": 1, "target_thp_mbps": 20}'
+```
+
+**Ferramentas disponíveis:**
+
+| Ferramenta | Descrição | Estado |
+|---|---|---|
+| `query_nwdaf` | Analytics/predição da NWDAF via `Nnwdaf_AnalyticsInfo` (TS 23.288) | stub (mock) |
+| `configure_qos` | Aplica GBR/MBR/5QI da slice no PCF (PCC rule) + SMF (sessão) | stub (`# TODO` PCF/SMF) |
+| `revert_qos` | Restaura a configuração anterior de uma intent | real (tabela `policies`) |
+| `get_core_kpis` | Lê a telemetria de núcleo mais recente da slice | real (tabela `core_kpis`) |
+| `record_policy` | Persiste a política aplicada | real (tabela `policies`) |
+
 ### RAN-NSSMF (`agents/ran-nssmf/`) — a implementar
+
+### Collector (`agents/collector/`)
+
+Amostrador de série temporal: a cada `COLLECT_INTERVAL` segundos grava uma linha
+por slice em `core_kpis` **e** `ran_kpis`, para que as ferramentas de leitura dos
+agentes (`get_core_kpis`, `get_sla_status`, …) e o modelo preditivo da NWDAF
+tenham histórico.
+
+Fonte plugável por tabela:
+
+| Fonte | `core_kpis` | `ran_kpis` | Descrição |
+|---|:---:|:---:|---|
+| `prometheus` | ✔ (padrão) | ✔ | Prometheus HTTP API sobre os exportadores Open5GS. RAN só consegue aproximar throughput pelos contadores N3 da UPF (HANDOVER-2026-08-25, "Opção 1"); RSRP/SINR/MCS/PRB ficam `NULL`. |
+| `o1` | — | ✔ | **ideal para RAN**: NETCONF/YANG contra o gNB (TS 28.552). Stub em `o1_client.py` — não conectado (depende do software do gNB, HANDOVER-2026-09-01 §3). |
+| `mock` | ✔ | ✔ (padrão) | linhas sintéticas, para desenvolver o pipeline antes das métricas reais existirem. |
+
+Open5GS 2.6.4 expõe poucas métricas rotuladas por slice, então o agregado é
+atribuído a todas as slices — ver `# TODO` sobre o rótulo `snssai` em `main.py`.
+
+```bash
+cd agents/collector
+pip install -r ../../requirements.txt
+CORE_SOURCE=mock RAN_SOURCE=mock SLICES=1,2 python main.py
+```
+
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `PROMETHEUS_URL` | `http://prometheus:9090` | endpoint do Prometheus |
+| `COLLECT_INTERVAL` | `10` | segundos entre amostras |
+| `SLICES` | `1,2` | SSTs a coletar |
+| `CORE_SOURCE` | `prometheus` | `prometheus` \| `mock` |
+| `RAN_SOURCE` | `mock` | `prometheus` \| `o1` \| `mock` |
 
 ---
 
