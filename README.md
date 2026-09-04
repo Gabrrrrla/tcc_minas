@@ -172,16 +172,6 @@ amf:
   port: 38412
 ```
 
-### Placeholders pendentes em `srsran/gnb.yaml`
-
-| Campo | Como obter |
-|---|---|
-| `GNB_BIND_ADDR` | IP do servidor na rede de fronthaul |
-| `FRONTHAUL_IF` | `ip link show` no servidor |
-| `DU_MAC` | `ip link show` no servidor |
-| `RU_MAC` | MAC da Liteon Flexi |
-| `DL_ARFCN` / `BAND` | Parâmetros configurados na Liteon |
-
 ---
 
 ## Agentes Python
