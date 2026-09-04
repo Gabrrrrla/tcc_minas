@@ -89,10 +89,12 @@ tcc_II/
 │   │   ├── main.py             # Flask (POST /directive, GET /health)
 │   │   ├── tools.py            # 5 ferramentas + dispatcher
 │   │   └── nwdaf_client.py     # stub das interfaces normativas da NWDAF (TS 23.288)
-│   ├── collector/              # amostrador core_kpis + ran_kpis (fonte: prometheus | o1 | mock)
-│   │   ├── main.py             # loop de coleta -> INSERT core_kpis / ran_kpis
-│   │   └── o1_client.py        # stub da interface O1/NETCONF do gNB (fonte ideal p/ RAN)
-│   └── ran-nssmf/              # (a implementar)
+│   ├── ran-nssmf/               # esqueleto: servidor HTTP /directive
+│   │   ├── main.py             # Flask (POST /directive, GET /health)
+│   │   └── tools.py            # 5 ferramentas + dispatcher
+│   └── collector/              # amostrador core_kpis + ran_kpis (fonte: prometheus | o1 | mock)
+│       ├── main.py             # loop de coleta -> INSERT core_kpis / ran_kpis
+│       └── o1_client.py        # stub da interface O1/NETCONF do gNB (fonte ideal p/ RAN)
 │
 ├── scripts/
 │   ├── provision.js            # Cadastra UE1 (SST=1+2) e UE2 (SST=2) no MongoDB
@@ -129,6 +131,7 @@ tcc_II/
 | prometheus | prom/prometheus:v2.53.0 | 10.11.0.50 | 9090 |
 | grafana | grafana/grafana:11.1.0 | 10.11.0.51 | 3001 |
 | cn-nssmf | build `agents/Dockerfile` | 10.11.0.60 | 8001 |
+| ran-nssmf | build `agents/Dockerfile` | 10.11.0.62 | 8002 |
 | collector | build `agents/Dockerfile` | 10.11.0.61 | — |
 
 ---
@@ -251,7 +254,32 @@ curl -X POST localhost:8001/directive -H 'content-type: application/json' \
 | `get_core_kpis` | Lê a telemetria de núcleo mais recente da slice | real (tabela `core_kpis`) |
 | `record_policy` | Persiste a política aplicada | real (tabela `policies`) |
 
-### RAN-NSSMF (`agents/ran-nssmf/`) — a implementar
+### RAN-NSSMF (`agents/ran-nssmf/`) — esqueleto
+
+Agente de domínio do acesso rádio. Mesmo molde do CN-NSSMF: serviço HTTP, recebe
+diretivas do orquestrador em `POST /directive` (`http://ran-nssmf:8002`), cada uma
+dispara um loop ReAct. Ações: `apply_resources`, `revert_resources`, `check_sla`.
+
+```bash
+cd agents/ran-nssmf
+pip install -r ../../requirements.txt
+python main.py          # escuta em :8002
+
+curl -X POST localhost:8002/directive -H 'content-type: application/json' \
+  -d '{"intent_id": 1, "action": "apply_resources", "sst": 1, "target_thp_mbps": 20}'
+```
+
+**Ferramentas disponíveis:**
+
+| Ferramenta | Descrição | Estado |
+|---|---|---|
+| `get_ran_kpis` | Agrega os últimos ~30 s de `ran_kpis` da slice | real (tabela `ran_kpis`) |
+| `get_slice_load` | Índice de carga da slice; computa e persiste se estiver defasado | real (tabela `slice_load`) |
+| `estimate_capacity` | PRBs necessários p/ um alvo de throughput e se cabem no orçamento | modelo estático (`# TODO` link adaptation) |
+| `allocate_prb` | Define a fração de PRB da slice no gNB | stub (`# TODO` RIC/xApp E2) |
+| `revert_prb` | Restaura a alocação anterior de uma intent | stub (`# TODO` persistir alocações) |
+
+Modelo de rádio configurável por env: `RAN_PRB_TOTAL` (default 51), `RAN_MBPS_PER_PRB` (default 0.40).
 
 ### Collector (`agents/collector/`)
 

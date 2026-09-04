@@ -248,6 +248,11 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./agents/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U minas -d minas"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   cn-nssmf:
     build: *agent-build
@@ -267,7 +272,40 @@ services:
     networks:
       minas-net:
         ipv4_address: 10.11.0.60
-    depends_on: [postgres, amf, smf, pcf]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      amf:
+        condition: service_started
+      smf:
+        condition: service_started
+      pcf:
+        condition: service_started
+
+  ran-nssmf:
+    build: *agent-build
+    image: minas-agent:local
+    container_name: ran-nssmf
+    working_dir: /app/agents/ran-nssmf
+    command: python main.py
+    environment:
+      <<: [*pg-env, *ollama-env]
+      RAN_NSSMF_PORT: "8002"
+      ORCHESTRATOR_URL: http://orchestrator:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8002:8002"
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.62
+    depends_on:
+      postgres:
+        condition: service_healthy
+      amf:
+        condition: service_started
+      smf:
+        condition: service_started
 
   orchestrator:
     build: *agent-build
@@ -287,7 +325,13 @@ services:
     networks:
       minas-net:
         ipv4_address: 10.11.0.55
-    depends_on: [postgres, cn-nssmf]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      cn-nssmf:
+        condition: service_started
+      ran-nssmf:
+        condition: service_started
 
   collector:
     build: *agent-build
@@ -305,7 +349,11 @@ services:
     networks:
       minas-net:
         ipv4_address: 10.11.0.61
-    depends_on: [postgres, prometheus]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
 
 volumes:
   mongodb_data:

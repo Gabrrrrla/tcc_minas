@@ -17,5 +17,5 @@ venv/
 *.pcap
 
 # Texto
-.txt
-.md
+*.txt
+*.md
