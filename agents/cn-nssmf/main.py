@@ -1,13 +1,18 @@
 """
 MINAS CN-NSSMF Agent — Core Network Slice Subnet Management Function
 
-Receives operational directives from the Orchestrator over HTTP, reasons about
-them with an LLM (ReAct, no fine-tuning) and enforces them on the 5G Core:
-QoS reconfiguration at PCF/SMF and predictive analytics from the NWDAF.
+Exposed to the Orchestrator as an MCP server (Model Context Protocol,
+streamable-HTTP transport). Each MCP tool corresponds to one directive
+action; when invoked it runs the agent's own ReAct loop (no fine-tuning,
+local LLM via Ollama) and enforces the result on the 5G Core: QoS
+reconfiguration at PCF/SMF and predictive analytics from the NWDAF.
+
+Coordination is mediated by the Orchestrator over MCP — this agent never
+talks to the operator or to the RAN-NSSMF directly.
 
 Paradigm  : ReAct (Reasoning and Acting) — no fine-tuning
 Backend   : Ollama (local inference server) — see agents/react.py
-Transport : HTTP POST /directive  (called by the orchestrator's invoke_cn_nssmf tool)
+Transport : MCP over streamable HTTP  (server endpoint  :8001/mcp)
 """
 
 import json
@@ -17,7 +22,7 @@ import sys
 # make agents/ importable (shared db.py + react.py) whether run via Docker or `cd agents/cn-nssmf`
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from flask import Flask, jsonify, request
+from mcp.server.fastmcp import FastMCP
 
 from react import MODEL, OLLAMA_URL, react_loop
 from tools import TOOL_SCHEMAS, dispatch_tool
@@ -30,11 +35,11 @@ management.
 
 ## Role
 - Receive a single operational directive from the Orchestrator. You never talk to
-  the operator directly, and never to the RAN-NSSMF — all coordination is mediated
+  the operator directly, and never to the RAN-NSSMF, all coordination is mediated
   by the Orchestrator.
 - Reason about the directive and enforce it on the 5G Core control plane:
-    * PCF — policy rules (PCC rule, 5QI, ARP) per S-NSSAI
-    * SMF — session parameters (Session-AMBR, QoS Flow GBR/MBR) per DNN / slice
+    * PCF policy rules (PCC rule, 5QI, ARP) per S-NSSAI
+    * SMF session parameters (Session-AMBR, QoS Flow GBR/MBR) per DNN / slice
 - Obtain telemetry and predictions from the NWDAF via its normative interfaces
   (Nnwdaf_AnalyticsInfo, Nnwdaf_EventsSubscription).
 - Report the resulting SLA compliance state back to the Orchestrator as your
@@ -68,12 +73,21 @@ management.
    plus the key numbers.
 """
 
-app = Flask(__name__)
+mcp = FastMCP("cn-nssmf", host="0.0.0.0", port=PORT)
 
 
-def handle_directive(directive: dict) -> dict:
-    """Run the ReAct loop for one orchestrator directive; return a JSON-able dict."""
-    print(f"[cn-nssmf] directive received: {json.dumps(directive)}")
+def _run_directive(action: str, intent_id: int, sst: int,
+                   target_thp_mbps: float | None = None,
+                   window_end: str | None = None) -> dict:
+    """Build a directive dict and drive the ReAct loop for it — the same
+    body the old `POST /directive` handler had, now reached over MCP."""
+    directive: dict = {"intent_id": intent_id, "action": action, "sst": sst}
+    if target_thp_mbps is not None:
+        directive["target_thp_mbps"] = target_thp_mbps
+    if window_end is not None:
+        directive["window_end"] = window_end
+
+    print(f"[cn-nssmf] directive received (mcp): {json.dumps(directive)}")
     user_msg = (
         "Directive from the Orchestrator:\n"
         f"{json.dumps(directive, indent=2)}\n\n"
@@ -82,27 +96,57 @@ def handle_directive(directive: dict) -> dict:
     out = react_loop(SYSTEM_PROMPT, user_msg, TOOL_SCHEMAS, dispatch_tool, tag="cn-nssmf")
     return {
         "agent": "cn-nssmf",
-        "intent_id": directive.get("intent_id"),
-        "action": directive.get("action"),
+        "intent_id": intent_id,
+        "action": action,
         "result": out["final"],
         "trace": out["trace"],
     }
 
 
-@app.post("/directive")
-def directive_endpoint():
-    directive = request.get_json(force=True) or {}
+@mcp.tool()
+def apply_qos(intent_id: int, sst: int, target_thp_mbps: float | None = None,
+              window_end: str | None = None) -> dict:
+    """Reconfigure QoS for a slice on the 5G Core (PCF policy rule + SMF
+    session parameters). In a predictive scenario (SST=2) the agent queries
+    the NWDAF first, then configures QoS, then records the policy."""
+    return _run_directive("apply_qos", intent_id, sst, target_thp_mbps, window_end)
+
+
+@mcp.tool()
+def revert_qos(intent_id: int, sst: int) -> dict:
+    """Restore the QoS configuration that was in place before this intent's
+    policy was applied. Called when a time window expires."""
+    return _run_directive("revert_qos", intent_id, sst)
+
+
+@mcp.tool()
+def query_nwdaf(intent_id: int, sst: int) -> dict:
+    """Return an NWDAF analytics / prediction report for the slice, without
+    changing any configuration."""
+    return _run_directive("query_nwdaf", intent_id, sst)
+
+
+@mcp.tool()
+def check_sla(intent_id: int, sst: int) -> dict:
+    """Read core-network KPIs for the slice and judge SLA compliance."""
+    return _run_directive("check_sla", intent_id, sst)
+
+
+def _register_health() -> None:
+    """Best-effort GET /health — skipped on mcp versions without custom_route."""
     try:
-        return jsonify(handle_directive(directive))
-    except Exception as exc:  # surface any failure to the orchestrator
-        return jsonify({"agent": "cn-nssmf", "error": str(exc)}), 500
+        from starlette.responses import JSONResponse
+
+        @mcp.custom_route("/health", methods=["GET"])
+        async def _health(_req):  # noqa: ANN001
+            return JSONResponse({"status": "ok", "agent": "cn-nssmf", "transport": "mcp"})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[cn-nssmf] /health route unavailable: {exc}")
 
 
-@app.get("/health")
-def health():
-    return jsonify({"status": "ok", "agent": "cn-nssmf"})
+_register_health()
 
 
 if __name__ == "__main__":
-    print(f"[cn-nssmf] listening on :{PORT}  model={MODEL} @ {OLLAMA_URL}")
-    app.run(host="0.0.0.0", port=PORT)
+    print(f"[cn-nssmf] MCP server on :{PORT}/mcp   model={MODEL} @ {OLLAMA_URL}")
+    mcp.run(transport="streamable-http")

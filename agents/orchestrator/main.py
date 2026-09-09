@@ -17,8 +17,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask import Flask, jsonify, request
 
+import scheduler
 from react import MODEL, OLLAMA_URL, react_loop
-from tools import TOOL_SCHEMAS, dispatch_tool
+from tools import dispatch_tool, get_tool_schemas
 
 PORT = int(os.getenv("ORCHESTRATOR_PORT", "8000"))
 
@@ -29,9 +30,12 @@ Multi-Agent System for autonomous 5G network slice management.
 - Receive operator intents expressed in natural language.
 - Interpret the intent and extract the target slice (SST), QoS objective,
   and optional enforcement window (window_start / window_end).
-- Decompose the intent into directives and invoke the domain agents:
-    * CN-NSSMF  — manages 5G Core functions (AMF, SMF, PCF, UPF, NWDAF)
-    * RAN-NSSMF — manages Radio Access Network resources (srsRAN gNB)
+- Decompose the intent into directives and call the domain agents. Their
+  actions reach you as MCP tools, prefixed by agent:
+    * cn_nssmf_*  — CN-NSSMF: 5G Core (AMF, SMF, PCF, UPF, NWDAF)
+                    e.g. cn_nssmf_apply_qos, cn_nssmf_query_nwdaf
+    * ran_nssmf_* — RAN-NSSMF: Radio Access Network (srsRAN gNB)
+                    e.g. ran_nssmf_apply_resources
 - Monitor SLA compliance and trigger reversions when a time window expires.
 - Never access core or RAN interfaces directly; your role is purely semantic.
 
@@ -48,10 +52,13 @@ Multi-Agent System for autonomous 5G network slice management.
 
 ## Decision rules
 1. Always record the intent in the database before acting (record_intent tool).
-2. Invoke CN-NSSMF and RAN-NSSMF in parallel when both domains are affected.
+2. Call the cn_nssmf_* and ran_nssmf_* tools in parallel when both domains
+   are affected.
 3. If resources are insufficient, apply graceful degradation:
    notify the operator, log the SLA violation, redistribute if policy allows.
-4. When a time window expires, send revert directives to both domain agents.
+4. Windowed intents (window_end) revert automatically once the window closes —
+   handled by the background scheduler, not by you. You never need to schedule
+   or trigger a revert yourself; just record window_end via record_intent.
 5. Report final outcome (applied / degraded / failed / reverted) back to the operator.
 """
 
@@ -62,7 +69,7 @@ def run(intent_text: str) -> str:
     """Drive the ReAct loop for one natural-language intent; return the outcome text."""
     print(f"[orchestrator] intent received: {intent_text}")
     print(f"[orchestrator] model: {MODEL} @ {OLLAMA_URL}")
-    return react_loop(SYSTEM_PROMPT, intent_text, TOOL_SCHEMAS, dispatch_tool, tag="orchestrator")["final"]
+    return react_loop(SYSTEM_PROMPT, intent_text, get_tool_schemas(), dispatch_tool, tag="orchestrator")["final"]
 
 
 @app.post("/intent")
@@ -89,5 +96,6 @@ if __name__ == "__main__":
         print(run(" ".join(sys.argv[1:])))
     else:
         # service mode
+        scheduler.start()
         print(f"[orchestrator] listening on :{PORT}  model={MODEL} @ {OLLAMA_URL}")
         app.run(host="0.0.0.0", port=PORT)

@@ -14,13 +14,13 @@ Operador (linguagem natural)
         │
         ▼
 ┌─────────────────────┐
-│    Orquestrador     │  ← LLM + ReAct + tool-calling
+│    Orquestrador     │  ← LLM + ReAct + tool-calling (cliente MCP)
 │  (agente central)   │
 └──────┬──────────────┘
-       │ diretivas
+       │ diretivas via MCP (streamable HTTP)
   ┌────┴────┐
   ▼         ▼
-CN-NSSMF  RAN-NSSMF
+CN-NSSMF  RAN-NSSMF   ← servidores MCP (cada ação = ferramenta MCP)
 (núcleo)   (rádio)
   │             │
   ▼             ▼
@@ -31,6 +31,12 @@ Open5GS      srsRAN
          Liteon Flexi
            (RU física)
 ```
+
+A coordenação orquestrador ↔ agentes de domínio é feita por **MCP** (Model
+Context Protocol): cada agente de domínio roda um servidor MCP que expõe suas
+ações de diretiva como ferramentas; o orquestrador é cliente MCP e descobre
+essas ferramentas dinamicamente. A NWDAF fica em HTTP de propósito — modela a
+interface normativa 3GPP `Nnwdaf_AnalyticsInfo` (TS 23.288 / TS 29.520).
 
 **Três camadas:**
 - **Intenção** — entrada do operador em linguagem natural
@@ -83,15 +89,19 @@ tcc_II/
 │   ├── db.py                   # conexão PostgreSQL — compartilhada
 │   ├── react.py                # cliente Ollama + loop ReAct — compartilhado
 │   ├── orchestrator/
-│   │   ├── main.py             # HTTP (POST /intent) + CLI + system prompt 3GPP
-│   │   └── tools.py            # 5 ferramentas + dispatcher
-│   ├── cn-nssmf/               # esqueleto: servidor HTTP /directive
-│   │   ├── main.py             # Flask (POST /directive, GET /health)
-│   │   ├── tools.py            # 5 ferramentas + dispatcher
-│   │   └── nwdaf_client.py     # stub das interfaces normativas da NWDAF (TS 23.288)
-│   ├── ran-nssmf/               # esqueleto: servidor HTTP /directive
-│   │   ├── main.py             # Flask (POST /directive, GET /health)
-│   │   └── tools.py            # 5 ferramentas + dispatcher
+│   │   ├── main.py             # HTTP (POST /intent) + CLI + system prompt 3GPP; cliente MCP
+│   │   ├── tools.py            # 3 ferramentas locais + descoberta MCP das ferramentas de domínio
+│   │   └── scheduler.py        # thread de reversão por janela temporal (UC2); revert via MCP
+│   ├── mcp_common.py          # helpers de cliente MCP (list_remote_tools / call_remote_tool)
+│   ├── cn-nssmf/               # esqueleto: servidor MCP (streamable HTTP, :8001/mcp)
+│   │   ├── main.py             # FastMCP; ferramentas apply_qos/revert_qos/query_nwdaf/check_sla + GET /health
+│   │   ├── tools.py            # 5 ferramentas internas (ReAct) + dispatcher
+│   │   └── nwdaf_client.py     # cliente da NWDAF (TS 23.288); cai pra mock se ela estiver fora
+│   ├── ran-nssmf/               # esqueleto: servidor MCP (streamable HTTP, :8002/mcp)
+│   │   ├── main.py             # FastMCP; ferramentas apply_resources/revert_resources/check_sla + GET /health
+│   │   └── tools.py            # 5 ferramentas internas (ReAct) + dispatcher
+│   ├── nwdaf/                   # analytics — não é agente ReAct, é serviço de ML
+│   │   └── main.py             # Flask (POST /analytics); Random Forest real p/ SLICE_LOAD_LEVEL
 │   └── collector/              # amostrador core_kpis + ran_kpis (fonte: prometheus | o1 | mock)
 │       ├── main.py             # loop de coleta -> INSERT core_kpis / ran_kpis
 │       └── o1_client.py        # stub da interface O1/NETCONF do gNB (fonte ideal p/ RAN)
@@ -132,6 +142,7 @@ tcc_II/
 | grafana | grafana/grafana:11.1.0 | 10.11.0.51 | 3001 |
 | cn-nssmf | build `agents/Dockerfile` | 10.11.0.60 | 8001 |
 | ran-nssmf | build `agents/Dockerfile` | 10.11.0.62 | 8002 |
+| nwdaf | build `agents/Dockerfile` | 10.11.0.63 | 8080 |
 | collector | build `agents/Dockerfile` | 10.11.0.61 | — |
 
 ---
@@ -220,35 +231,62 @@ curl -X POST localhost:8000/intent -H 'content-type: application/json' \
 
 **Ferramentas disponíveis:**
 
+Locais (só PostgreSQL):
+
 | Ferramenta | Descrição |
 |---|---|
 | `record_intent` | Persiste intenção no PostgreSQL |
 | `get_sla_status` | Lê KPIs da slice no banco |
-| `invoke_cn_nssmf` | Envia diretiva ao CN-NSSMF |
-| `invoke_ran_nssmf` | Envia diretiva ao RAN-NSSMF |
 | `update_intent_status` | Atualiza ciclo de vida da intenção |
+
+De domínio — **descobertas via MCP** nos servidores CN-NSSMF/RAN-NSSMF na
+primeira execução e apresentadas ao LLM com prefixo de agente (pra os dois
+`check_sla` não colidirem):
+
+| Ferramenta (no LLM) | Servidor MCP | Ação remota |
+|---|---|---|
+| `cn_nssmf_apply_qos` / `cn_nssmf_revert_qos` / `cn_nssmf_query_nwdaf` / `cn_nssmf_check_sla` | `http://cn-nssmf:8001` | `apply_qos` / … |
+| `ran_nssmf_apply_resources` / `ran_nssmf_revert_resources` / `ran_nssmf_check_sla` | `http://ran-nssmf:8002` | `apply_resources` / … |
+
+**Reversão por janela temporal (UC2):** o serviço sobe uma thread
+(`scheduler.py`) que a cada `SCHEDULER_INTERVAL_SECONDS` (default 15s)
+verifica `intents` com `window_end` vencido e status `applied`/`degraded`, e
+chama as ferramentas MCP `revert_qos`/`revert_resources` nos servidores
+CN-NSSMF/RAN-NSSMF — sem passar pelo LLM, já que é um gatilho determinístico
+por tempo. Só marca a intent como `reverted` quando os dois agentes
+confirmam; senão tenta de novo na próxima varredura. Não roda no modo CLI
+(processo de execução única).
 
 ### CN-NSSMF (`agents/cn-nssmf/`) — esqueleto
 
-Agente de domínio do núcleo 5G. Sobe como serviço HTTP e recebe diretivas do
-orquestrador em `POST /directive` (a ferramenta `invoke_cn_nssmf` do orquestrador
-aponta para `http://cn-nssmf:8001`). Cada diretiva dispara um loop ReAct próprio.
+Agente de domínio do núcleo 5G. Sobe como **servidor MCP** (streamable HTTP,
+endpoint `:8001/mcp`) e expõe as ações de diretiva como ferramentas MCP
+(`apply_qos`, `revert_qos`, `query_nwdaf`, `check_sla`). Cada chamada dispara
+um loop ReAct próprio sobre as ferramentas internas abaixo.
 
 ```bash
 cd agents/cn-nssmf
 pip install -r ../../requirements.txt
-python main.py          # escuta em :8001
+python main.py          # servidor MCP em :8001/mcp
 
-# testar
-curl -X POST localhost:8001/directive -H 'content-type: application/json' \
-  -d '{"intent_id": 1, "action": "apply_qos", "sst": 1, "target_thp_mbps": 20}'
+# liveness
+curl localhost:8001/health
+
+# testar via MCP (Python) — precisa de Ollama pra o loop ReAct completar
+python - <<'PY'
+import sys; sys.path.insert(0, "..")   # agents/ no path
+from mcp_common import list_remote_tools, call_remote_tool
+print(list_remote_tools("http://localhost:8001"))
+print(call_remote_tool("http://localhost:8001", "apply_qos",
+                       {"intent_id": 1, "sst": 1, "target_thp_mbps": 20}))
+PY
 ```
 
-**Ferramentas disponíveis:**
+**Ferramentas internas (loop ReAct):**
 
 | Ferramenta | Descrição | Estado |
 |---|---|---|
-| `query_nwdaf` | Analytics/predição da NWDAF via `Nnwdaf_AnalyticsInfo` (TS 23.288) | stub (mock) |
+| `query_nwdaf` | Analytics/predição da NWDAF via `Nnwdaf_AnalyticsInfo` (TS 23.288) | real p/ `SLICE_LOAD_LEVEL`; cai pra mock se a NWDAF estiver fora ou p/ os outros `analytics_id` |
 | `configure_qos` | Aplica GBR/MBR/5QI da slice no PCF (PCC rule) + SMF (sessão) | stub (`# TODO` PCF/SMF) |
 | `revert_qos` | Restaura a configuração anterior de uma intent | real (tabela `policies`) |
 | `get_core_kpis` | Lê a telemetria de núcleo mais recente da slice | real (tabela `core_kpis`) |
@@ -256,20 +294,18 @@ curl -X POST localhost:8001/directive -H 'content-type: application/json' \
 
 ### RAN-NSSMF (`agents/ran-nssmf/`) — esqueleto
 
-Agente de domínio do acesso rádio. Mesmo molde do CN-NSSMF: serviço HTTP, recebe
-diretivas do orquestrador em `POST /directive` (`http://ran-nssmf:8002`), cada uma
-dispara um loop ReAct. Ações: `apply_resources`, `revert_resources`, `check_sla`.
+Agente de domínio do acesso rádio. Mesmo molde do CN-NSSMF: **servidor MCP**
+(streamable HTTP, `:8002/mcp`), ferramentas `apply_resources`,
+`revert_resources`, `check_sla`, cada chamada dispara um loop ReAct.
 
 ```bash
 cd agents/ran-nssmf
 pip install -r ../../requirements.txt
-python main.py          # escuta em :8002
-
-curl -X POST localhost:8002/directive -H 'content-type: application/json' \
-  -d '{"intent_id": 1, "action": "apply_resources", "sst": 1, "target_thp_mbps": 20}'
+python main.py          # servidor MCP em :8002/mcp
+curl localhost:8002/health
 ```
 
-**Ferramentas disponíveis:**
+**Ferramentas internas (loop ReAct):**
 
 | Ferramenta | Descrição | Estado |
 |---|---|---|
@@ -280,6 +316,36 @@ curl -X POST localhost:8002/directive -H 'content-type: application/json' \
 | `revert_prb` | Restaura a alocação anterior de uma intent | stub (`# TODO` persistir alocações) |
 
 Modelo de rádio configurável por env: `RAN_PRB_TOTAL` (default 51), `RAN_MBPS_PER_PRB` (default 0.40).
+
+### NWDAF (`agents/nwdaf/`)
+
+Não é um agente ReAct — é um microsserviço de analytics chamado pelo
+`query_nwdaf` do CN-NSSMF (`agents/cn-nssmf/nwdaf_client.py`). Expõe
+`POST /analytics` no formato `Nnwdaf_AnalyticsInfo` (TS 23.288 / TS 29.520).
+
+```bash
+cd agents/nwdaf
+pip install -r ../../requirements.txt
+python main.py          # escuta em :8080
+
+curl -X POST localhost:8080/analytics -H 'content-type: application/json' \
+  -d '{"analytics_id": "SLICE_LOAD_LEVEL", "sst": 2, "horizon_seconds": 60}'
+```
+
+| `analytics_id` | Estado |
+|---|---|
+| `SLICE_LOAD_LEVEL` | real — `RandomForestRegressor` treinado sob demanda em janelas de lag sobre o histórico de `core_kpis.thp_dl_mbps` da slice, prevendo `horizon_seconds` à frente |
+| `NF_LOAD` / `USER_DATA_CONGESTION` / `ABNORMAL_BEHAVIOUR` | mock — precisam de features que o schema ainda não coleta (métricas de NF, sinais de congestionamento por usuário, baseline de anomalia) |
+
+Se o histórico ainda for curto (`collector` rodando há pouco tempo), cai pra
+mock com `reason: "insufficient history in core_kpis"`. Se a NWDAF estiver
+fora do ar, o `nwdaf_client` do CN-NSSMF absorve o erro e também cai pra mock
+— o loop ReAct não quebra. Comparação com Gradient Boosting e LSTM (pedida no
+TCC I cap. 4) é trabalho de avaliação para o relatório, não foi feita aqui.
+
+Configurável por env: `NWDAF_N_LAGS` (default 5), `NWDAF_HISTORY_LIMIT`
+(default 500), `NWDAF_MIN_TRAINING_ROWS` (default 5),
+`NWDAF_SLICE_CAPACITY_MBPS` (default 100 — normaliza Mbps previsto em carga 0–1).
 
 ### Collector (`agents/collector/`)
 

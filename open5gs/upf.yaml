@@ -20,4 +20,5 @@ upf:
 
 smf:
   pfcp:
-    - name: smf
+    # IP fixo do SMF na minas-net (docker-compose.yml) — mesmo motivo do smf.yaml.
+    - addr: 10.11.0.21

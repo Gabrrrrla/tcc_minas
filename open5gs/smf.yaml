@@ -37,4 +37,6 @@ scp:
 
 upf:
   pfcp:
-    - name: upf
+    # IP fixo do UPF na minas-net (docker-compose.yml). `name: upf` faz o
+    # Open5GS 2.6.4 falhar no getaddrinfo do peer PFCP (FATAL no SMF).
+    - addr: 10.11.0.22

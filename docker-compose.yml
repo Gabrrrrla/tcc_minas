@@ -43,13 +43,10 @@ services:
         ipv4_address: 10.11.0.3
     volumes:
       - ./scripts:/scripts
-    entrypoint: >
-      bash -c "
-        until mongo --host 10.11.0.2 --eval 'db.runCommand({ping:1})' > /dev/null 2>&1; do
-          echo 'Waiting for MongoDB...'; sleep 2;
-        done;
-        mongo --nodb /scripts/provision.js
-      "
+    entrypoint:
+      - sh
+      - -c
+      - "until mongo --host 10.11.0.2 --eval 'db.runCommand({ping:1})' >/dev/null 2>&1; do echo waiting-for-mongo; sleep 2; done; mongo --nodb /scripts/provision.js"
     depends_on: [mongodb]
     restart: "no"
 
@@ -170,14 +167,15 @@ services:
   upf:
     image: gradiant/open5gs:2.6.4
     container_name: upf
-    command: >
-      sh -c "ip tuntap add name ogstun mode tun &&
-             ip addr add 10.45.0.1/16 dev ogstun &&
-             ip link set ogstun up &&
-             ip tuntap add name ogstun2 mode tun &&
-             ip addr add 10.46.0.1/16 dev ogstun2 &&
-             ip link set ogstun2 up &&
-             open5gs-upfd"
+    # single-line + quoted on purpose: a folded ('>') multi-line command
+    # breaks when this file has CRLF endings (CR lands mid-command).
+    # bypass the image /entrypoint.sh: it runs $@ UNQUOTED, so a `sh -c
+    # "multi word script"` gets word-split and only the first token survives.
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - "ip tuntap add name ogstun mode tun 2>/dev/null || true; ip addr add 10.45.0.1/16 dev ogstun 2>/dev/null || true; ip link set ogstun up; ip tuntap add name ogstun2 mode tun 2>/dev/null || true; ip addr add 10.46.0.1/16 dev ogstun2 2>/dev/null || true; ip link set ogstun2 up; echo 1 > /proc/sys/net/ipv4/ip_forward; exec open5gs-upfd"
     privileged: true
     cap_add:
       - NET_ADMIN
@@ -254,6 +252,24 @@ services:
       timeout: 3s
       retries: 10
 
+  nwdaf:
+    build: *agent-build
+    image: minas-agent:local
+    container_name: nwdaf
+    working_dir: /app/agents/nwdaf
+    command: python main.py
+    environment:
+      <<: *pg-env
+      NWDAF_PORT: "8080"
+    ports:
+      - "8080:8080"
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.63
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   cn-nssmf:
     build: *agent-build
     image: minas-agent:local
@@ -280,6 +296,8 @@ services:
       smf:
         condition: service_started
       pcf:
+        condition: service_started
+      nwdaf:
         condition: service_started
 
   ran-nssmf:

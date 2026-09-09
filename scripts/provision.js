@@ -131,4 +131,6 @@ db.subscribers.insertOne({
 });
 print('Subscriber 001010000000002 provisioned (SST=2 only).');
 
-print('Done. Total subscribers: ' + db.subscribers.countDocuments());
+// .count() (not .countDocuments(), which needs an aggregate the mongo:4.4 shell
+// rejects under --nodb) — keeps the provision container exit code clean.
+print('Done. Total subscribers: ' + db.subscribers.count());

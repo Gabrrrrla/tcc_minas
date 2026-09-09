@@ -6,15 +6,23 @@ Two service operations matter to MINAS:
   Nnwdaf_AnalyticsInfo       — synchronous request for an analytics report
   Nnwdaf_EventsSubscription  — subscribe to periodic analytics notifications
 
-This is a skeleton: the functions return mock analytics so the ReAct loop can be
-exercised end to end. Replace the bodies with real HTTP calls to the NWDAF (or to
-the Random Forest service that stands in for the MTLF in Use Case 1).
+get_analytics() now calls the real NWDAF service (agents/nwdaf/), which trains
+a RandomForestRegressor on core_kpis history for SLICE_LOAD_LEVEL and returns
+mock values for the other analytics IDs (see agents/nwdaf/main.py docstring).
+If the NWDAF is unreachable (not deployed, still training, network hiccup),
+this degrades to a local mock so the ReAct loop keeps working end to end
+instead of failing the whole directive.
+
+subscribe_events() is still a full stub — Nnwdaf_EventsSubscription needs a
+callback endpoint on this agent to receive notifications, not built yet.
 """
 
 from __future__ import annotations
 
 import os
 import random
+
+import requests
 
 NWDAF_URL = os.getenv("NWDAF_URL", "http://nwdaf:8080")
 
@@ -28,25 +36,30 @@ ANALYTICS_IDS = {
 
 
 def get_analytics(analytics_id: str, sst: int, horizon_seconds: int = 60) -> dict:
-    """Nnwdaf_AnalyticsInfo — one-shot predictive analytics request.
-
-    TODO: replace with a real GET to
-    {NWDAF_URL}/nnwdaf-analyticsinfo/v1/analytics?event-id=<analytics_id>&...
-    and map the response to the dict below.
-    """
+    """Nnwdaf_AnalyticsInfo — one-shot predictive analytics request against the
+    real NWDAF service. Falls back to a local mock if it can't be reached."""
     if analytics_id not in ANALYTICS_IDS:
         return {"error": f"unknown analytics_id: {analytics_id}"}
 
-    # --- skeleton mock -----------------------------------------------------
-    predicted = round(random.uniform(0.40, 0.95), 3)
-    return {
-        "analytics_id": analytics_id,
-        "sst": sst,
-        "horizon_seconds": horizon_seconds,
-        "predicted_load": predicted,   # normalized 0.0 – 1.0
-        "confidence": 0.8,
-        "source": "mock",              # -> "nwdaf" once wired
-    }
+    try:
+        resp = requests.post(
+            f"{NWDAF_URL}/analytics",
+            json={"analytics_id": analytics_id, "sst": sst, "horizon_seconds": horizon_seconds},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as exc:
+        predicted = round(random.uniform(0.40, 0.95), 3)
+        return {
+            "analytics_id": analytics_id,
+            "sst": sst,
+            "horizon_seconds": horizon_seconds,
+            "predicted_load": predicted,   # normalized 0.0 – 1.0
+            "confidence": 0.5,
+            "source": "mock-fallback",     # nwdaf unreachable -> degraded gracefully
+            "error": str(exc),
+        }
 
 
 def subscribe_events(analytics_id: str, sst: int, period_seconds: int = 10) -> dict:
