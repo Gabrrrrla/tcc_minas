@@ -211,7 +211,48 @@ ollama pull llama3.1:70b   # baixa o modelo (necessário apenas uma vez)
 ollama serve               # sobe o servidor de inferência em localhost:11434
 ```
 
-### Orquestrador (`agents/orchestrator/`)
+### Escolha do modelo LLM
+
+O modelo é selecionado pela variável `MINAS_MODEL` no `.env`. Dois perfis:
+
+**Genérico (padrão, pronto para usar):**
+```bash
+MINAS_MODEL=llama3.1:70b
+```
+
+**OTel — fine-tuned em 3GPP/O-RAN (recomendado para produção):**
+
+A GSMA disponibiliza a série [OTel-LLM](https://huggingface.co/collections/farbodtavakkoli/otel-llm) (18 modelos, 270 M–32 B parâmetros), treinados sobre especificações 3GPP, O-RAN e RFC. Esses modelos reduzem alucinações de domínio na interpretação de intenções e nos loops ReAct dos agentes.
+
+Os modelos são publicados em safetensors. Para usar via Ollama, converter para GGUF com `llama.cpp`:
+
+```bash
+# 1. Baixar o modelo do HuggingFace
+huggingface-cli download farbodtavakkoli/OTel-LLM-7B-IT --local-dir otel-7b
+
+# 2. Converter para GGUF Q4_K_M (bom equilíbrio qualidade/memória)
+git clone https://github.com/ggerganov/llama.cpp
+pip install -r llama.cpp/requirements.txt
+python llama.cpp/convert_hf_to_gguf.py otel-7b --outfile otel-7b-q4.gguf --outtype q4_k_m
+
+# 3. Registrar no Ollama
+ollama create otel-7b -f - <<'EOF'
+FROM ./otel-7b-q4.gguf
+EOF
+
+# 4. Apontar o MINAS para o novo modelo
+echo "MINAS_MODEL=otel-7b" >> .env
+```
+
+| Modelo | Parâmetros | VRAM necessária |
+|---|---|---|
+| OTel-LLM-1B-IT | 1 B | ~2 GB (CPU ok) |
+| OTel-LLM-3B-IT | 3 B | ~4 GB |
+| OTel-LLM-7B-IT | 7 B | ~8 GB |
+| OTel-LLM-8.3B-IT | 8.3 B | ~10 GB |
+| OTel-LLM-14B-IT | 14 B | ~16 GB |
+
+
 
 Recebe intenção em linguagem natural e conduz o loop ReAct até resolver. Roda em
 dois modos:

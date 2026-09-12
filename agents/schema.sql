@@ -162,3 +162,26 @@ CREATE TABLE policies (
 CREATE INDEX idx_policies_intent    ON policies (intent_id);
 CREATE INDEX idx_policies_status    ON policies (status);
 CREATE INDEX idx_policies_sst_time  ON policies (sst, applied_at DESC);
+
+
+-- -------------------------------------------------------------------------
+-- RAN allocations (PRB state per intent, written by RAN-NSSMF)
+-- Stores the pre-intent allocation so revert_prb can restore exact values.
+-- -------------------------------------------------------------------------
+CREATE TABLE ran_allocations (
+    id              SERIAL PRIMARY KEY,
+    intent_id       INTEGER NOT NULL REFERENCES intents(id),
+    applied_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reverted_at     TIMESTAMPTZ,
+
+    sst             INTEGER NOT NULL,
+    prb_allocated   INTEGER NOT NULL,           -- PRBs set by this intent
+    supported_thp_mbps  REAL NOT NULL,          -- throughput the allocation supports
+    prb_previous    INTEGER,                    -- PRBs before this intent (NULL = unknown)
+
+    status          TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active','reverted'))
+);
+
+CREATE INDEX idx_ran_alloc_intent ON ran_allocations (intent_id);
+CREATE INDEX idx_ran_alloc_status ON ran_allocations (sst, status);
