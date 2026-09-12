@@ -207,50 +207,71 @@ Os agentes usam **Ollama** como servidor de inferência local — sem dependênc
 
 ```bash
 # instalar: https://ollama.com
-ollama pull llama3.1:70b   # baixa o modelo (necessário apenas uma vez)
 ollama serve               # sobe o servidor de inferência em localhost:11434
+ollama pull qwen2.5:7b     # modelo padrão do MINAS (ver justificativa abaixo)
 ```
 
 ### Escolha do modelo LLM
 
-O modelo é selecionado pela variável `MINAS_MODEL` no `.env`. Dois perfis:
+O modelo é selecionado pela variável `MINAS_MODEL` no `.env`.
 
-**Genérico (padrão, pronto para usar):**
+**`qwen2.5:7b` — padrão do MINAS (desde 12/09/2026):**
+
+Escolhido depois de um smoke test ao vivo comparar 3 candidatos: foi o único que conduziu o loop ReAct completo de ponta a ponta (`record_intent` → `cn_nssmf_*`/`ran_nssmf_*` → `update_intent_status`) de forma consistente, usando o protocolo de tool-calling estruturado do Ollama corretamente. Sem fine-tuning de telecom — a mitigação de alucinação de domínio depende inteiramente dos `guardrails.py` determinísticos. Isso foi um teste informal (poucas execuções), não o benchmark rigoroso que o TCC I promete (P6: comparar candidatos num conjunto de intenções derivado da TS 28.312, medindo acurácia de tool-calling) — esse benchmark formal ainda é trabalho pendente.
+
+**Por que não OTel-LLM-E4B-IT (ou qualquer outro tamanho da família OTel-LLM):**
+
+O projeto [OTel (Open Telco AI)](https://github.com/farbodtavakkoli/OTel) — com contribuição da GSMA — disponibiliza a série [OTel-LLM](https://huggingface.co/collections/farbodtavakkoli/otel-llm) (270 M–32 B parâmetros), fine-tuned em specs 3GPP/O-RAN/ETSI/ITU. Era a escolha óbvia pro domínio do MINAS, e chegou a ser o padrão por um tempo: **OTel-LLM-E4B-IT** tem 91,7% de correctness no eval "context-grounded generation" da própria OTel (melhor resultado publicado na categoria).
+
+**Não funcionou:** toda a família OTel-LLM é treinada com a mesma receita — pergunta + trecho de contexto recuperado + resposta, mais exemplos de **abstenção** quando o contexto não contém a resposta. Como o MINAS ainda não tem RAG (item pendente P3 — injetar trechos de TS 28.312/23.288 antes do loop ReAct), o modelo nunca recebe o bloco de "contexto recuperado" que espera, e o reflexo treinado é abster-se em vez de tentar uma ferramenta. No smoke test ele **nunca chamou nenhuma ferramenta**, respondendo direto "Answer not found in the retrieved context." Isso não se resolve com ajuste de prompt — é a receita de treino inteira, compartilhada por todos os tamanhos da série, não só o E4B. (`llama3.1:8b` também foi testado e descartado: emite a chamada de ferramenta como texto solto em vez de usar o campo `tool_calls` estruturado do Ollama.)
+
+Retomar o OTel quando o RAG (P3) existir — alimentá-lo com um bloco de contexto recuperado de verdade pode destravar o comportamento pretendido; até lá, ele não consegue conduzir o loop ReAct de jeito nenhum (não é "pior que o qwen", é não-funcional nesse uso).
+
+Guia de conversão (mantido pra quando isso for revisitado — os modelos são publicados em `.bin` pytorch; pra usar via Ollama, converter para GGUF com `llama.cpp`; a OTel também lista quantizações prontas em `inference/ollama` no repo — **confira lá primeiro**, pode poupar todo o processo abaixo):
+
 ```bash
-MINAS_MODEL=llama3.1:70b
-```
+# 0. Espaço em disco: reserve ~70GB temporários (31,5GB download + ~16GB
+#    intermediário f16 + ~5GB final — dá pra apagar os dois primeiros depois)
 
-**OTel — fine-tuned em 3GPP/O-RAN (recomendado para produção):**
-
-A GSMA disponibiliza a série [OTel-LLM](https://huggingface.co/collections/farbodtavakkoli/otel-llm) (18 modelos, 270 M–32 B parâmetros), treinados sobre especificações 3GPP, O-RAN e RFC. Esses modelos reduzem alucinações de domínio na interpretação de intenções e nos loops ReAct dos agentes.
-
-Os modelos são publicados em safetensors. Para usar via Ollama, converter para GGUF com `llama.cpp`:
-
-```bash
 # 1. Baixar o modelo do HuggingFace
-huggingface-cli download farbodtavakkoli/OTel-LLM-7B-IT --local-dir otel-7b
+huggingface-cli download farbodtavakkoli/OTel-LLM-E4B-IT --local-dir otel-e4b
 
-# 2. Converter para GGUF Q4_K_M (bom equilíbrio qualidade/memória)
-git clone https://github.com/ggerganov/llama.cpp
+# 2. Converter HF -> GGUF f16 (convert_hf_to_gguf.py só aceita
+#    f32/f16/bf16/q8_0/tq1_0/tq2_0/auto — NÃO aceita q4_k_m direto)
+git clone https://github.com/ggml-org/llama.cpp
 pip install -r llama.cpp/requirements.txt
-python llama.cpp/convert_hf_to_gguf.py otel-7b --outfile otel-7b-q4.gguf --outtype q4_k_m
+python llama.cpp/convert_hf_to_gguf.py otel-e4b --outfile otel-e4b-f16.gguf --outtype f16
 
-# 3. Registrar no Ollama
-ollama create otel-7b -f - <<'EOF'
-FROM ./otel-7b-q4.gguf
+# 3. Quantizar f16 -> Q4_K_M com o binário llama-quantize (compilado — baixe um
+#    release pronto em https://github.com/ggml-org/llama.cpp/releases em vez
+#    de compilar do zero)
+./llama-quantize otel-e4b-f16.gguf otel-e4b-q4_k_m.gguf Q4_K_M
+
+# 4. Registrar no Ollama
+ollama create otel-llm-e4b-it -f - <<'EOF'
+FROM ./otel-e4b-q4_k_m.gguf
 EOF
 
-# 4. Apontar o MINAS para o novo modelo
-echo "MINAS_MODEL=otel-7b" >> .env
+# 5. Apontar o MINAS para o novo modelo
+echo "MINAS_MODEL=otel-llm-e4b-it" >> .env
 ```
 
-| Modelo | Parâmetros | VRAM necessária |
+Outras variantes da série, por tamanho *efetivo* nomeado pela OTel (o tamanho real em disco pode ser maior, como no E4B acima — confira o repositório de cada uma antes de baixar):
+
+| Modelo | Parâmetros (nome) | Observação |
 |---|---|---|
-| OTel-LLM-1B-IT | 1 B | ~2 GB (CPU ok) |
-| OTel-LLM-3B-IT | 3 B | ~4 GB |
-| OTel-LLM-7B-IT | 7 B | ~8 GB |
-| OTel-LLM-8.3B-IT | 8.3 B | ~10 GB |
-| OTel-LLM-14B-IT | 14 B | ~16 GB |
+| OTel-LLM-1B-IT | 1 B | menor da linha, CPU ok |
+| OTel-LLM-3B-IT | 3 B | leve |
+| OTel-LLM-E4B-IT | "E4B" (efetivo) | ~8B params reais, ~31,5GB de download, ~5GB depois de quantizado — não funciona sem RAG (ver acima) |
+| OTel-LLM-7B-IT | 7 B | — |
+| OTel-LLM-8.3B-IT | 8.3 B | — |
+| OTel-LLM-14B-IT | 14 B | maior, exige mais RAM/VRAM |
+
+**Genérico (fallback, sem fine-tuning de domínio):**
+```bash
+ollama pull llama3.1:70b
+MINAS_MODEL=llama3.1:70b
+```
 
 
 

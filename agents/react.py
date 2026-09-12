@@ -7,7 +7,8 @@ react_loop  — reason/act cycle: call the model, run any tool calls it emits,
               tool call (or REACT_MAX_STEPS is hit).
 
 Environment: OLLAMA_URL (default http://localhost:11434),
-             MINAS_MODEL (default llama3.1:70b),
+             MINAS_MODEL (default qwen2.5:7b — see env.example for why this
+             is the default instead of the telecom-tuned OTel-LLM-E4B-IT),
              REACT_MAX_STEPS (default 16).
 """
 
@@ -23,7 +24,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-MODEL      = os.getenv("MINAS_MODEL", "llama3.1:70b")
+MODEL      = os.getenv("MINAS_MODEL", "qwen2.5:7b")
 MAX_STEPS  = int(os.getenv("REACT_MAX_STEPS", "16"))
 
 

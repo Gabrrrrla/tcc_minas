@@ -19,7 +19,7 @@ x-pg-env: &pg-env
 
 x-ollama-env: &ollama-env
   OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
-  MINAS_MODEL: ${MINAS_MODEL:-llama3.1:70b}
+  MINAS_MODEL: ${MINAS_MODEL:-qwen2.5:7b}
 
 services:
 

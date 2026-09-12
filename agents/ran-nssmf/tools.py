@@ -122,7 +122,17 @@ TOOL_SCHEMAS: list[dict] = [
 # ---------------------------------------------------------------------------
 
 def _recent_ran(sst: int | None) -> dict:
-    """Aggregate the last ~30 s of ran_kpis. sst=None -> all slices."""
+    """Aggregate the last ~30 s of ran_kpis. sst=None -> all slices.
+
+    Takes the most recent row per (sst, ue_id) in the window, then sums those
+    latest snapshots across UEs/slices — NOT a straight SUM over every row in
+    the window. ran_kpis gets a new row per slice every ~10s (collector
+    tick), so summing raw rows over a 30s window was double/triple counting
+    the same "current PRB usage" reading across ticks, making prb_used_dl
+    balloon past PRB_TOTAL almost immediately and forcing every allocation
+    into "degraded" regardless of actual load. Bug found + fixed 2026-09-12
+    while running the first live smoke test.
+    """
     conn = get_db_conn()
     where = "collected_at > NOW() - INTERVAL %s"
     params: list[Any] = [RECENT_WINDOW]
@@ -135,8 +145,12 @@ def _recent_ran(sst: int | None) -> dict:
             SELECT COUNT(DISTINCT ue_id), AVG(rsrp_dbm), AVG(sinr_db), AVG(mcs_dl),
                    COALESCE(SUM(prb_used_dl), 0), COALESCE(SUM(thp_dl_mbps), 0),
                    COALESCE(SUM(thp_ul_mbps), 0)
-              FROM ran_kpis
-             WHERE {where}
+              FROM (
+                  SELECT DISTINCT ON (sst, ue_id) *
+                    FROM ran_kpis
+                   WHERE {where}
+                   ORDER BY sst, ue_id, collected_at DESC
+              ) latest
             """,
             params,
         )
