@@ -1,6 +1,6 @@
-# MINAS — Multi-Agent Intent-Driven Network Analytics and Slicing
+# MINAS - Multi-Agent Intent-Driven Network Analytics and Slicing
 
-TCC II — Ciência da Computação, UNISINOS  
+TCC II - Ciência da Computação, UNISINOS  
 Orientador: Prof. Dr. Cristiano Bonato Both
 
 Sistema de orquestração autônoma de fatias de rede 5G baseado em Multi-Agent System (MAS) e Large Language Models (LLMs). O operador expressa objetivos em linguagem natural; o sistema interpreta, negocia recursos entre domínios e aplica as configurações nas funções de núcleo e acesso rádio.
