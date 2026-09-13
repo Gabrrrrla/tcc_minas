@@ -1,6 +1,6 @@
-# MINAS — Multi-Agent Intent-Driven Network Analytics and Slicing
+# MINAS - Multi-Agent Intent-Driven Network Analytics and Slicing
 
-TCC II — Ciência da Computação, UNISINOS  
+TCC II - Ciência da Computação, UNISINOS  
 Orientador: Prof. Dr. Cristiano Bonato Both
 
 Sistema de orquestração autônoma de fatias de rede 5G baseado em Multi-Agent System (MAS) e Large Language Models (LLMs). O operador expressa objetivos em linguagem natural; o sistema interpreta, negocia recursos entre domínios e aplica as configurações nas funções de núcleo e acesso rádio.
@@ -39,22 +39,22 @@ essas ferramentas dinamicamente. A NWDAF fica em HTTP de propósito — modela a
 interface normativa 3GPP `Nnwdaf_AnalyticsInfo` (TS 23.288 / TS 29.520).
 
 **Três camadas:**
-- **Intenção** — entrada do operador em linguagem natural
-- **Orquestração agêntica** — Orquestrador + CN-NSSMF + RAN-NSSMF (agentes ReAct, sem fine-tuning)
-- **Infraestrutura** — Open5GS 5G Core + srsRAN + Liteon Flexi DU/RU
+- **Intenção** - entrada do operador em linguagem natural
+- **Orquestração agêntica** - Orquestrador + CN-NSSMF + RAN-NSSMF (agentes ReAct, sem fine-tuning)
+- **Infraestrutura** - Open5GS 5G Core + srsRAN + Liteon Flexi DU/RU
 
 **Dois slices:**
-- `SST=1` (eMBB) — streaming / UC2
-- `SST=2` (URLLC) — missão crítica / UC1
+- `SST=1` (eMBB) - streaming / UC2
+- `SST=2` (URLLC) - missão crítica / UC1
 
 ---
 
 ## Casos de uso
 
-### UC1 — Predição e ajuste de recursos (SST=2)
+### UC1 - Predição e ajuste de recursos (SST=2)
 CN-NSSMF consulta NWDAF periodicamente. A NWDAF aplica Random Forest sobre séries históricas de telemetria para prever utilização de recursos com horizonte de 60 segundos. Se a previsão ultrapassar o limiar, o orquestrador amplia os recursos da slice. Se insuficientes, aplica degradação graciosa e registra violação de SLA.
 
-### UC2 — Política de QoS agendada (SST=1)
+### UC2 - Política de QoS agendada (SST=1)
 Orquestrador interpreta intenção com janela temporal, decompõe em duas diretivas paralelas (CN-NSSMF reconfigura QoS no PCF/SMF; RAN-NSSMF ajusta PRBs). Ao fim da janela, o orquestrador envia diretivas de reversão e restaura as configurações anteriores.
 
 ---
@@ -86,8 +86,8 @@ tcc_II/
 ├── agents/
 │   ├── schema.sql              # Schema PostgreSQL (KPIs, intents, negotiations, policies)
 │   ├── Dockerfile              # imagem única dos 3 agentes (build context = raiz)
-│   ├── db.py                   # conexão PostgreSQL — compartilhada
-│   ├── react.py                # cliente Ollama + loop ReAct — compartilhado
+│   ├── db.py                   # conexão PostgreSQL - compartilhada
+│   ├── react.py                # cliente Ollama + loop ReAct - compartilhado
 │   ├── orchestrator/
 │   │   ├── main.py             # HTTP (POST /intent) + CLI + system prompt 3GPP; cliente MCP
 │   │   ├── tools.py            # 3 ferramentas locais + descoberta MCP das ferramentas de domínio
@@ -100,7 +100,7 @@ tcc_II/
 │   ├── ran-nssmf/               # esqueleto: servidor MCP (streamable HTTP, :8002/mcp)
 │   │   ├── main.py             # FastMCP; ferramentas apply_resources/revert_resources/check_sla + GET /health
 │   │   └── tools.py            # 5 ferramentas internas (ReAct) + dispatcher
-│   ├── nwdaf/                   # analytics — não é agente ReAct, é serviço de ML
+│   ├── nwdaf/                   # analytics - não é agente ReAct, é serviço de ML
 │   │   └── main.py             # Flask (POST /analytics); Random Forest real p/ SLICE_LOAD_LEVEL
 │   └── collector/              # amostrador core_kpis + ran_kpis (fonte: prometheus | o1 | mock)
 │       ├── main.py             # loop de coleta -> INSERT core_kpis / ran_kpis
@@ -183,7 +183,7 @@ docker compose logs provision     # deve mostrar: Subscriber ...001 provisioned
 |---|---|---|
 | Open5GS WebUI | http://localhost:3000 | admin / 1432 |
 | Grafana | http://localhost:3001 | admin / minas |
-| Prometheus | http://localhost:9090 | — |
+| Prometheus | http://localhost:9090 | - |
 
 ---
 
@@ -215,34 +215,34 @@ ollama pull qwen2.5:7b     # modelo padrão do MINAS (ver justificativa abaixo)
 
 O modelo é selecionado pela variável `MINAS_MODEL` no `.env`.
 
-**`qwen2.5:7b` — padrão do MINAS (desde 12/09/2026):**
+**`qwen2.5:7b` - padrão do MINAS (desde 12/09/2026):**
 
-Escolhido depois de um smoke test ao vivo comparar 3 candidatos: foi o único que conduziu o loop ReAct completo de ponta a ponta (`record_intent` → `cn_nssmf_*`/`ran_nssmf_*` → `update_intent_status`) de forma consistente, usando o protocolo de tool-calling estruturado do Ollama corretamente. Sem fine-tuning de telecom — a mitigação de alucinação de domínio depende inteiramente dos `guardrails.py` determinísticos. Isso foi um teste informal (poucas execuções), não o benchmark rigoroso que o TCC I promete (P6: comparar candidatos num conjunto de intenções derivado da TS 28.312, medindo acurácia de tool-calling) — esse benchmark formal ainda é trabalho pendente.
+Escolhido depois de um smoke test ao vivo comparar 3 candidatos: foi o único que conduziu o loop ReAct completo de ponta a ponta (`record_intent` → `cn_nssmf_*`/`ran_nssmf_*` → `update_intent_status`) de forma consistente, usando o protocolo de tool-calling estruturado do Ollama corretamente. Sem fine-tuning de telecom, a mitigação de alucinação de domínio depende inteiramente dos `guardrails.py` determinísticos. Isso foi um teste informal (poucas execuções), não o benchmark rigoroso que o TCC I promete (P6: comparar candidatos num conjunto de intenções derivado da TS 28.312, medindo acurácia de tool-calling), esse benchmark formal ainda é trabalho pendente.
 
 **Por que não OTel-LLM-E4B-IT (ou qualquer outro tamanho da família OTel-LLM):**
 
-O projeto [OTel (Open Telco AI)](https://github.com/farbodtavakkoli/OTel) — com contribuição da GSMA — disponibiliza a série [OTel-LLM](https://huggingface.co/collections/farbodtavakkoli/otel-llm) (270 M–32 B parâmetros), fine-tuned em specs 3GPP/O-RAN/ETSI/ITU. Era a escolha óbvia pro domínio do MINAS, e chegou a ser o padrão por um tempo: **OTel-LLM-E4B-IT** tem 91,7% de correctness no eval "context-grounded generation" da própria OTel (melhor resultado publicado na categoria).
+O projeto [OTel (Open Telco AI)](https://github.com/farbodtavakkoli/OTel), com contribuição da GSMA, disponibiliza a série [OTel-LLM](https://huggingface.co/collections/farbodtavakkoli/otel-llm) (270 M–32 B parâmetros), fine-tuned em specs 3GPP/O-RAN/ETSI/ITU. Era a escolha óbvia pro domínio do MINAS, e chegou a ser o padrão por um tempo: **OTel-LLM-E4B-IT** tem 91,7% de correctness no eval "context-grounded generation" da própria OTel (melhor resultado publicado na categoria).
 
 **Não funcionou (1ª tentativa, sem RAG):** toda a família OTel-LLM é treinada com a mesma receita — pergunta + trecho de contexto recuperado + resposta, mais exemplos de **abstenção** quando o contexto não contém a resposta. Sem RAG, o modelo nunca recebia o bloco de "contexto recuperado" que espera, e o reflexo treinado era abster-se em vez de tentar uma ferramenta: nunca chamou nenhuma ferramenta, respondendo direto "Answer not found in the retrieved context." (`llama3.1:8b` também foi testado e descartado: emite a chamada de ferramenta como texto solto em vez de usar o campo `tool_calls` estruturado do Ollama.)
 
 **RAG (P3) já foi implementado** (`agents/rag/`) e o teste foi repetido com contexto de verdade injetado — resultado: **ainda não funciona, mas por um motivo diferente**. O modelo parou de abster-se, só que em vez de chamar as ferramentas ele **alucinou uma resposta completa** (números de throughput/SLA inventados, sem nenhum `tool_use` no trace). Ou seja, o RAG resolveu o sintoma (abstenção) mas não a causa raiz: o próprio model card da OTel já avisa que o mix de treino não tem exemplos de tool-calling específicos de telecom — isso é o gargalo real, com ou sem contexto recuperado. Achado de 12/09/2026, ver `HANDOVER-2026-09-12.md`.
 
-Guia de conversão (mantido pra quando isso for revisitado — os modelos são publicados em `.bin` pytorch; pra usar via Ollama, converter para GGUF com `llama.cpp`; a OTel também lista quantizações prontas em `inference/ollama` no repo — **confira lá primeiro**, pode poupar todo o processo abaixo):
+Guia de conversão (mantido pra quando isso for revisitado, os modelos são publicados em `.bin` pytorch; pra usar via Ollama, converter para GGUF com `llama.cpp`; a OTel também lista quantizações prontas em `inference/ollama` no repo, **confira lá primeiro**, pode poupar todo o processo abaixo):
 
 ```bash
 # 0. Espaço em disco: reserve ~70GB temporários (31,5GB download + ~16GB
-#    intermediário f16 + ~5GB final — dá pra apagar os dois primeiros depois)
+#    intermediário f16 + ~5GB final - dá pra apagar os dois primeiros depois)
 
 # 1. Baixar o modelo do HuggingFace
 huggingface-cli download farbodtavakkoli/OTel-LLM-E4B-IT --local-dir otel-e4b
 
 # 2. Converter HF -> GGUF f16 (convert_hf_to_gguf.py só aceita
-#    f32/f16/bf16/q8_0/tq1_0/tq2_0/auto — NÃO aceita q4_k_m direto)
+#    f32/f16/bf16/q8_0/tq1_0/tq2_0/auto - NÃO aceita q4_k_m direto)
 git clone https://github.com/ggml-org/llama.cpp
 pip install -r llama.cpp/requirements.txt
 python llama.cpp/convert_hf_to_gguf.py otel-e4b --outfile otel-e4b-f16.gguf --outtype f16
 
-# 3. Quantizar f16 -> Q4_K_M com o binário llama-quantize (compilado — baixe um
+# 3. Quantizar f16 -> Q4_K_M com o binário llama-quantize (compilado - baixe um
 #    release pronto em https://github.com/ggml-org/llama.cpp/releases em vez
 #    de compilar do zero)
 ./llama-quantize otel-e4b-f16.gguf otel-e4b-q4_k_m.gguf Q4_K_M
@@ -301,7 +301,7 @@ Locais (só PostgreSQL):
 | `get_sla_status` | Lê KPIs da slice no banco |
 | `update_intent_status` | Atualiza ciclo de vida da intenção |
 
-De domínio — **descobertas via MCP** nos servidores CN-NSSMF/RAN-NSSMF na
+De domínio - **descobertas via MCP** nos servidores CN-NSSMF/RAN-NSSMF na
 primeira execução e apresentadas ao LLM com prefixo de agente (pra os dois
 `check_sla` não colidirem):
 
@@ -314,12 +314,12 @@ primeira execução e apresentadas ao LLM com prefixo de agente (pra os dois
 (`scheduler.py`) que a cada `SCHEDULER_INTERVAL_SECONDS` (default 15s)
 verifica `intents` com `window_end` vencido e status `applied`/`degraded`, e
 chama as ferramentas MCP `revert_qos`/`revert_resources` nos servidores
-CN-NSSMF/RAN-NSSMF — sem passar pelo LLM, já que é um gatilho determinístico
+CN-NSSMF/RAN-NSSMF - sem passar pelo LLM, já que é um gatilho determinístico
 por tempo. Só marca a intent como `reverted` quando os dois agentes
 confirmam; senão tenta de novo na próxima varredura. Não roda no modo CLI
 (processo de execução única).
 
-### CN-NSSMF (`agents/cn-nssmf/`) — esqueleto
+### CN-NSSMF (`agents/cn-nssmf/`) - esqueleto
 
 Agente de domínio do núcleo 5G. Sobe como **servidor MCP** (streamable HTTP,
 endpoint `:8001/mcp`) e expõe as ações de diretiva como ferramentas MCP
@@ -334,7 +334,7 @@ python main.py          # servidor MCP em :8001/mcp
 # liveness
 curl localhost:8001/health
 
-# testar via MCP (Python) — precisa de Ollama pra o loop ReAct completar
+# testar via MCP (Python) - precisa de Ollama pra o loop ReAct completar
 python - <<'PY'
 import sys; sys.path.insert(0, "..")   # agents/ no path
 from mcp_common import list_remote_tools, call_remote_tool
@@ -354,7 +354,7 @@ PY
 | `get_core_kpis` | Lê a telemetria de núcleo mais recente da slice | real (tabela `core_kpis`) |
 | `record_policy` | Persiste a política aplicada | real (tabela `policies`) |
 
-### RAN-NSSMF (`agents/ran-nssmf/`) — esqueleto
+### RAN-NSSMF (`agents/ran-nssmf/`) - esqueleto
 
 Agente de domínio do acesso rádio. Mesmo molde do CN-NSSMF: **servidor MCP**
 (streamable HTTP, `:8002/mcp`), ferramentas `apply_resources`,
@@ -381,7 +381,7 @@ Modelo de rádio configurável por env: `RAN_PRB_TOTAL` (default 51), `RAN_MBPS_
 
 ### NWDAF (`agents/nwdaf/`)
 
-Não é um agente ReAct — é um microsserviço de analytics chamado pelo
+Não é um agente ReAct - é um microsserviço de analytics chamado pelo
 `query_nwdaf` do CN-NSSMF (`agents/cn-nssmf/nwdaf_client.py`). Expõe
 `POST /analytics` no formato `Nnwdaf_AnalyticsInfo` (TS 23.288 / TS 29.520).
 
@@ -396,18 +396,18 @@ curl -X POST localhost:8080/analytics -H 'content-type: application/json' \
 
 | `analytics_id` | Estado |
 |---|---|
-| `SLICE_LOAD_LEVEL` | real — `RandomForestRegressor` treinado sob demanda em janelas de lag sobre o histórico de `core_kpis.thp_dl_mbps` da slice, prevendo `horizon_seconds` à frente |
-| `NF_LOAD` / `USER_DATA_CONGESTION` / `ABNORMAL_BEHAVIOUR` | mock — precisam de features que o schema ainda não coleta (métricas de NF, sinais de congestionamento por usuário, baseline de anomalia) |
+| `SLICE_LOAD_LEVEL` | real - `RandomForestRegressor` treinado sob demanda em janelas de lag sobre o histórico de `core_kpis.thp_dl_mbps` da slice, prevendo `horizon_seconds` à frente |
+| `NF_LOAD` / `USER_DATA_CONGESTION` / `ABNORMAL_BEHAVIOUR` | mock - precisam de features que o schema ainda não coleta (métricas de NF, sinais de congestionamento por usuário, baseline de anomalia) |
 
 Se o histórico ainda for curto (`collector` rodando há pouco tempo), cai pra
 mock com `reason: "insufficient history in core_kpis"`. Se a NWDAF estiver
-fora do ar, o `nwdaf_client` do CN-NSSMF absorve o erro e também cai pra mock
-— o loop ReAct não quebra. Comparação com Gradient Boosting e LSTM (pedida no
+fora do ar, o `nwdaf_client` do CN-NSSMF absorve o erro e também cai pra mock,
+o loop ReAct não quebra. Comparação com Gradient Boosting e LSTM (pedida no
 TCC I cap. 4) é trabalho de avaliação para o relatório, não foi feita aqui.
 
 Configurável por env: `NWDAF_N_LAGS` (default 5), `NWDAF_HISTORY_LIMIT`
 (default 500), `NWDAF_MIN_TRAINING_ROWS` (default 5),
-`NWDAF_SLICE_CAPACITY_MBPS` (default 100 — normaliza Mbps previsto em carga 0–1).
+`NWDAF_SLICE_CAPACITY_MBPS` (default 100 - normaliza Mbps previsto em carga 0–1).
 
 ### Collector (`agents/collector/`)
 
@@ -425,7 +425,7 @@ Fonte plugável por tabela:
 | `mock` | ✔ | ✔ (padrão) | linhas sintéticas, para desenvolver o pipeline antes das métricas reais existirem. |
 
 Open5GS 2.6.4 expõe poucas métricas rotuladas por slice, então o agregado é
-atribuído a todas as slices — ver `# TODO` sobre o rótulo `snssai` em `main.py`.
+atribuído a todas as slices - ver `# TODO` sobre o rótulo `snssai` em `main.py`.
 
 ```bash
 cd agents/collector
