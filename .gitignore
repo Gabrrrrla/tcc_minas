@@ -19,3 +19,7 @@ venv/
 # Texto
 *.txt
 *.md
+*.tex
+
+# Docs
+*.pdf

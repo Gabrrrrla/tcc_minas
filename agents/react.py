@@ -51,6 +51,13 @@ def react_loop(
         {"role": "user",   "content": user_content},
     ]
     trace: list[dict] = []
+    # Cache of (name, sorted-args) -> result already dispatched this loop, so
+    # an exact repeat reuses the prior result instead of re-executing it (a
+    # write tool like record_policy/allocate_prb would otherwise insert a new
+    # duplicate row for identical arguments — seen live in the 12/09 smoke
+    # test: 8 duplicate record_policy rows for one intent). Genuinely
+    # different arguments still dispatch normally.
+    seen: dict[str, dict] = {}
 
     for _ in range(MAX_STEPS):
         assistant  = call_ollama(messages, tools)["message"]
@@ -69,9 +76,15 @@ def react_loop(
             fn   = call["function"]
             name = fn["name"]
             args = json.loads(fn["arguments"]) if isinstance(fn["arguments"], str) else fn["arguments"]
+            call_key = f"{name}|{json.dumps(args, sort_keys=True)}"
 
-            print(f"[{tag}] tool_use  → {name}({json.dumps(args)})")
-            result = dispatch(name, args)
+            if call_key in seen:
+                result = seen[call_key]
+                print(f"[{tag}] tool_use  → {name}({json.dumps(args)}) (repetida, cache)")
+            else:
+                print(f"[{tag}] tool_use  → {name}({json.dumps(args)})")
+                result = dispatch(name, args)
+                seen[call_key] = result
             print(f"[{tag}] tool_result ← {json.dumps(result)}")
 
             trace.append({"tool": name, "input": args, "result": result})

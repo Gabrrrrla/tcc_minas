@@ -165,20 +165,47 @@ def _clean(value: Any) -> Any:
 
 def _record_intent(params: dict) -> dict:
     conn = get_db_conn()
+    sst             = int(params["sst"])
+    target_thp_mbps = _clean(params.get("target_thp_mbps"))
+    window_start    = _clean(params.get("window_start"))
+    window_end      = _clean(params.get("window_end"))
+
     with conn, conn.cursor() as cur:
+        # Semantic-duplicate guard: the model sometimes calls record_intent
+        # more than once for the same operator request, often rewording
+        # raw_text between calls (e.g. "Aumente o throughput..." then later
+        # "Apply QoS for eMBB slice with a guaranteed throughput of 20
+        # Mbps.") — agents/react.py's exact-args dedup only catches byte-
+        # identical calls, so it doesn't catch this. If a structurally
+        # identical intent (same sst/target/window) was recorded in the last
+        # 2 minutes, reuse it instead of inserting a duplicate row. A 2-min
+        # window comfortably covers one ReAct loop's worth of retries
+        # without merging genuinely separate same-parameter requests an
+        # operator might send minutes apart. Known gap fixed 2026-09-12
+        # after this exact pattern was observed live (HANDOVER-2026-09-12.md).
+        cur.execute(
+            """
+            SELECT id FROM intents
+             WHERE sst = %s
+               AND target_thp_mbps IS NOT DISTINCT FROM %s
+               AND window_start    IS NOT DISTINCT FROM %s
+               AND window_end      IS NOT DISTINCT FROM %s
+               AND received_at > NOW() - INTERVAL '2 minutes'
+             ORDER BY id DESC LIMIT 1
+            """,
+            (sst, target_thp_mbps, window_start, window_end),
+        )
+        existing = cur.fetchone()
+        if existing:
+            return {"intent_id": existing[0], "status": "received", "note": "reused a matching intent recorded moments ago instead of duplicating it"}
+
         cur.execute(
             """
             INSERT INTO intents (raw_text, sst, target_thp_mbps, window_start, window_end, status)
             VALUES (%s, %s, %s, %s, %s, 'received')
             RETURNING id
             """,
-            (
-                params["raw_text"],
-                int(params["sst"]),
-                _clean(params.get("target_thp_mbps")),
-                _clean(params.get("window_start")),
-                _clean(params.get("window_end")),
-            ),
+            (params["raw_text"], sst, target_thp_mbps, window_start, window_end),
         )
         intent_id = cur.fetchone()[0]
     return {"intent_id": intent_id, "status": "received"}

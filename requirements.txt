@@ -1,6 +1,22 @@
+# CPU-only PyTorch wheel — containers have no GPU, and the default PyPI
+# wheel pulls in a much larger CUDA build we'd never use.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 flask>=3.0
 psycopg2-binary>=2.9
 python-dotenv>=1.0
 requests>=2.32
 scikit-learn>=1.4
 mcp>=1.9,<2
+
+# RAG (P3): BAAI/bge-small-en-v1.5 via sentence-transformers, used only by
+# the orchestrator (agents/rag/retriever.py) — see requirements note above
+# re: CPU-only torch. Every agent shares this one image/requirements.txt, so
+# nwdaf/cn-nssmf/ran-nssmf/collector carry this weight too even though they
+# don't use it; splitting into per-agent images is a bigger change, out of
+# scope for now (see HANDOVER-2026-09-12.md).
+# Pinned exact (not >=): 6.0.1 (latest at time of writing) can't load some
+# models due to a Dense-module loading change; 5.2.0 is the version
+# confirmed working against BAAI/bge-small-en-v1.5 here.
+sentence-transformers==5.2.0
+torch>=2.2
