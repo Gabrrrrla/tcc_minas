@@ -62,7 +62,17 @@ def react_loop(
     for _ in range(MAX_STEPS):
         assistant  = call_ollama(messages, tools)["message"]
         tool_calls = assistant.get("tool_calls") or []
-        messages.append({"role": "assistant", "content": assistant.get("content") or ""})
+        # Must include tool_calls here, not just content: dropping it left the
+        # model's own history showing an empty assistant turn immediately
+        # followed by a tool result attached to no call, which loses the
+        # model's own record of what it already invoked by the next turn —
+        # a likely cause of the pattern (seen live 22/09/2026) where a model
+        # calls one tool correctly, then narrates the rest as prose/JSON text
+        # instead of continuing to call tools.
+        assistant_message = {"role": "assistant", "content": assistant.get("content") or ""}
+        if tool_calls:
+            assistant_message["tool_calls"] = tool_calls
+        messages.append(assistant_message)
 
         # No tool calls → final answer
         if not tool_calls:

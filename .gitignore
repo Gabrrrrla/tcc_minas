@@ -16,6 +16,10 @@ venv/
 *.log
 *.pcap
 
+# Benchmark run output (agents/benchmark/run_benchmark.py) — raw per-run data,
+# not source; regenerate via the runner rather than versioning it.
+agents/benchmark/results/
+
 # Texto
 *.txt
 *.md

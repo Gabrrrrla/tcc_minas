@@ -19,7 +19,7 @@ import os
 from typing import Any
 
 from db import get_db_conn
-from guardrails import validate
+from guardrails import check as guardrail_check
 
 # Rough radio model — replace with real link adaptation from ran_kpis (MCS -> SE).
 PRB_TOTAL     = int(os.getenv("RAN_PRB_TOTAL", "51"))        # ~20 MHz @ 30 kHz SCS
@@ -353,7 +353,7 @@ _HANDLERS: dict[str, Any] = {
 
 
 def dispatch_tool(name: str, params: dict) -> dict:
-    err = validate(name, params)
+    err = guardrail_check(name, params, tag="ran-nssmf")
     if err:
         return err
     handler = _HANDLERS.get(name)

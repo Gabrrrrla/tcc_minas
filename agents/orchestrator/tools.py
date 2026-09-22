@@ -23,7 +23,7 @@ import os
 from typing import Any
 
 from db import get_db_conn
-from guardrails import validate
+from guardrails import check as guardrail_check
 from mcp_common import call_remote_tool, list_remote_tools
 
 # Domain-agent MCP servers the Orchestrator coordinates (overridable via env)
@@ -276,7 +276,7 @@ _LOCAL_HANDLERS: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 def dispatch_tool(name: str, params: dict) -> dict:
-    err = validate(name, params)
+    err = guardrail_check(name, params, tag="orchestrator")
     if err:
         return err
 

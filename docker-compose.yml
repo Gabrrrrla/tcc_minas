@@ -281,6 +281,7 @@ services:
       CN_NSSMF_PORT: "8001"
       NWDAF_URL: http://nwdaf:8080
       ORCHESTRATOR_URL: http://orchestrator:8000
+      GUARDRAILS_ENABLED: "${GUARDRAILS_ENABLED:-true}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -310,6 +311,7 @@ services:
       <<: [*pg-env, *ollama-env]
       RAN_NSSMF_PORT: "8002"
       ORCHESTRATOR_URL: http://orchestrator:8000
+      GUARDRAILS_ENABLED: "${GUARDRAILS_ENABLED:-true}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -336,6 +338,8 @@ services:
       ORCHESTRATOR_PORT: "8000"
       CN_NSSMF_URL: http://cn-nssmf:8001
       RAN_NSSMF_URL: http://ran-nssmf:8002
+      RAG_ENABLED: "${RAG_ENABLED:-true}"
+      GUARDRAILS_ENABLED: "${GUARDRAILS_ENABLED:-true}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

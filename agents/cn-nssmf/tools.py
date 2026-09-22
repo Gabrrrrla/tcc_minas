@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from db import get_db_conn
-from guardrails import validate
+from guardrails import check as guardrail_check
 from nwdaf_client import get_analytics
 
 # Default 5QI per slice type (TS 23.501 Table 5.7.4-1)
@@ -256,7 +256,7 @@ _HANDLERS: dict[str, Any] = {
 
 
 def dispatch_tool(name: str, params: dict) -> dict:
-    err = validate(name, params)
+    err = guardrail_check(name, params, tag="cn-nssmf")
     if err:
         return err
     handler = _HANDLERS.get(name)

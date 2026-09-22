@@ -13,8 +13,16 @@ All rules here are pure logic — no DB calls, no LLM, no randomness.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any
+
+# RQ3 ablation switch (see TCC-II-DRAFT.tex Section 5, "guardrails on/off"):
+# when disabled, validate() is still run so violations are visible in the
+# logs, but the error is not returned to the model, so the call proceeds as
+# if it had passed validation. Enabled by default — this must be an opt-out,
+# not something a benchmark run can silently forget to turn on.
+GUARDRAILS_ENABLED = os.getenv("GUARDRAILS_ENABLED", "true").strip().lower() not in ("false", "0", "no")
 
 # Valid SSTs defined by the MINAS deployment (TS 23.501 §5.15.2)
 _VALID_SST = {1, 2}
@@ -250,3 +258,18 @@ def validate(tool_name: str, params: dict) -> dict | None:
     if fn is None:
         return None
     return fn(params)
+
+
+def check(tool_name: str, params: dict, tag: str = "guardrails") -> dict | None:
+    """Entry point for dispatch_tool(): runs validate() and applies the
+    GUARDRAILS_ENABLED ablation switch. Returns the same shape as validate()
+    — None when the call may proceed, or the structured error dict when it
+    must be blocked."""
+    err = validate(tool_name, params)
+    if err is None:
+        return None
+    if GUARDRAILS_ENABLED:
+        return err
+    print(f"[{tag}] guardrails disabled (ablation) — would have rejected "
+          f"{tool_name}({params}): {err['error']}")
+    return None
