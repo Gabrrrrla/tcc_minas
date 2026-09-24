@@ -232,4 +232,171 @@ CHUNKS: list[dict[str, str]] = [
             "real PRB enforcement, once integrated with a live RIC."
         ),
     },
+    # ------------------------------------------------------------------
+    # TS 28.312 — Intent lifecycle and SLA enforcement (expanded)
+    # ------------------------------------------------------------------
+    {
+        "id": "intent-lifecycle",
+        "source": "TS 28.312 §7.1",
+        "text": (
+            "An intent passes through a defined lifecycle: received → "
+            "decomposed (translated into sub-intents or configuration "
+            "targets) → active (enforcement ongoing) → fulfilled / degraded "
+            "/ infeasible. The intent handler must report state transitions "
+            "back to the intent owner."
+        ),
+    },
+    {
+        "id": "intent-temporal-window",
+        "source": "TS 28.312 §6.2 (context)",
+        "text": (
+            "An intent's validity context can include a temporal window "
+            "(start and end time) defining when the target should be "
+            "enforced. Outside that window the network should revert to its "
+            "baseline configuration, and the intent status transitions to "
+            "reverted."
+        ),
+    },
+    {
+        "id": "intent-sla-reporting",
+        "source": "TS 28.312 §8 / TS 28.533 §6",
+        "text": (
+            "An intent handler is expected to continuously measure the "
+            "difference between the observed network state and the declared "
+            "target, and to report a fulfilment feedback (met, degraded, or "
+            "not met) to the intent owner at a configurable reporting "
+            "period."
+        ),
+    },
+    {
+        "id": "intent-decomposition",
+        "source": "TS 28.312 §7.2",
+        "text": (
+            "When an intent spans multiple network domains (e.g. core and "
+            "RAN), the intent management function decomposes it into "
+            "domain-specific sub-intents and coordinates their fulfilment — "
+            "the orchestrator's role in MINAS, dispatching directives to "
+            "CN-NSSMF and RAN-NSSMF."
+        ),
+    },
+    # ------------------------------------------------------------------
+    # TS 23.288 — NWDAF analytics and prediction (expanded)
+    # ------------------------------------------------------------------
+    {
+        "id": "nwdaf-prediction-horizon",
+        "source": "TS 23.288 §6.4.2",
+        "text": (
+            "A NWDAF analytics request for SLICE_LOAD_LEVEL can include a "
+            "prediction horizon specifying how far ahead the predicted load "
+            "should be forecast. The NWDAF returns a confidence level "
+            "alongside the prediction to indicate the reliability of the "
+            "forecast."
+        ),
+    },
+    {
+        "id": "nwdaf-predicted-load-use",
+        "source": "TS 23.288 §6.4 / TS 28.312 §6",
+        "text": (
+            "A consumer NF (e.g. a slice management function) uses "
+            "SLICE_LOAD_LEVEL predictions to trigger proactive resource "
+            "adjustments before congestion occurs — if predicted_load "
+            "exceeds a threshold, the consumer applies additional resources "
+            "or activates graceful degradation before the load materialises."
+        ),
+    },
+    {
+        "id": "nwdaf-data-sources",
+        "source": "TS 23.288 §5",
+        "text": (
+            "The NWDAF collects input data from NF service-based interfaces, "
+            "OAM management services (O1 interface), and the 5G Core event "
+            "exposure framework (NEF). For RAN analytics, measurements from "
+            "the gNB via O1/NETCONF (TS 28.552 performance measurements) "
+            "are the normative source."
+        ),
+    },
+    {
+        "id": "nwdaf-subscription-model",
+        "source": "TS 23.288 §7.3 / TS 29.520",
+        "text": (
+            "Beyond one-off requests, NWDAF supports event subscriptions: a "
+            "consumer NF registers a callback endpoint and receives periodic "
+            "or threshold-triggered analytics notifications — "
+            "Nnwdaf_EventsSubscription. MINAS currently uses only one-off "
+            "requests (get_analytics); subscription is a stub."
+        ),
+    },
+    # ------------------------------------------------------------------
+    # RAN resource management (expanded)
+    # ------------------------------------------------------------------
+    {
+        "id": "ran-slice-qos-mapping",
+        "source": "TS 38.300 §16.1 / O-RAN WG1",
+        "text": (
+            "In 5G NR, per-slice QoS differentiation in the RAN is achieved "
+            "by mapping S-NSSAIs to scheduler policies at the gNB. Each "
+            "S-NSSAI can be assigned a PRB quota and a scheduling priority, "
+            "so that URLLC slices (SST=2) receive low-latency handling while "
+            "eMBB slices (SST=1) receive high-throughput treatment."
+        ),
+    },
+    {
+        "id": "ran-capacity-estimation",
+        "source": "TS 38.306 / TS 28.552",
+        "text": (
+            "A gNB's downlink throughput capacity for a slice depends on the "
+            "number of allocated PRBs, the modulation and coding scheme (MCS) "
+            "selected per UE based on channel quality (CQI/SINR), and the "
+            "numerology (subcarrier spacing). A simplified estimate is "
+            "PRBs × spectral_efficiency_Mbps_per_PRB."
+        ),
+    },
+    {
+        "id": "o1-performance-measurements",
+        "source": "TS 28.552 §5",
+        "text": (
+            "TS 28.552 defines the O-RAN performance measurements exposed "
+            "over the O1 interface: RRU.PrbUsedDl/Ul (PRB utilisation), "
+            "DRB.UEThpDl/Ul (per-UE downlink/uplink throughput), and "
+            "L1M.RS-SINR / L1M.UE-RSRP (radio quality). These are the KPI "
+            "names used in MINAS's ran_kpis schema."
+        ),
+    },
+    # ------------------------------------------------------------------
+    # Multi-agent orchestration context
+    # ------------------------------------------------------------------
+    {
+        "id": "react-reasoning-pattern",
+        "source": "Yao et al. 2022 — ReAct (arXiv:2210.03629)",
+        "text": (
+            "The ReAct pattern interleaves reasoning traces (Thought) and "
+            "grounded actions (tool calls) in the same LLM context. The "
+            "model reasons about what to do next, calls a tool, observes "
+            "the result, and repeats until the task is complete — enabling "
+            "multi-step decision-making without fine-tuning."
+        ),
+    },
+    {
+        "id": "mcp-tool-discovery",
+        "source": "Model Context Protocol specification (Anthropic, 2024)",
+        "text": (
+            "MCP (Model Context Protocol) lets an LLM-based client discover "
+            "and invoke tools exposed by remote servers without hardcoded "
+            "schemas. A client calls list_tools on a server and receives "
+            "structured tool definitions at runtime — the mechanism MINAS's "
+            "orchestrator uses to discover CN-NSSMF and RAN-NSSMF actions."
+        ),
+    },
+    {
+        "id": "multi-domain-coordination",
+        "source": "TS 28.533 §6 / TS 28.312 §7.2",
+        "text": (
+            "Managing a network slice end-to-end requires coordinating "
+            "independent domain managers (core NSSMF, RAN NSSMF). The NSMF "
+            "or orchestrator collects fulfilment feedback from each domain "
+            "and resolves conflicts — for example, when the RAN cannot meet "
+            "the throughput the core committed, the orchestrator negotiates "
+            "a degraded target acceptable to both."
+        ),
+    },
 ]
