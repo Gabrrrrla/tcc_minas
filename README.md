@@ -3,7 +3,7 @@
 TCC II - Ciência da Computação, UNISINOS  
 Orientador: Prof. Dr. Cristiano Bonato Both
 
-Sistema de orquestração autônoma de fatias de rede 5G baseado em Multi-Agent System (MAS) e Large Language Models (LLMs). O operador expressa objetivos em linguagem natural; o sistema interpreta, negocia recursos entre domínios e aplica as configurações nas funções de núcleo e acesso rádio.
+Sistema de orquestração autônoma de fatias de rede 5G baseado em Multi-Agent System (MAS) e Large Language Models (LLMs). O operador expressa objetivos em linguagem natural e o sistema interpreta, negocia recursos entre domínios e aplica as configurações nas funções de núcleo e acesso rádio.
 
 ---
 
@@ -32,10 +32,10 @@ Open5GS      srsRAN
            (RU física)
 ```
 
-A coordenação orquestrador ↔ agentes de domínio é feita por **MCP** (Model
+A coordenação orquestrador e agentes de domínio é feita por **MCP** (Model
 Context Protocol): cada agente de domínio roda um servidor MCP que expõe suas
 ações de diretiva como ferramentas; o orquestrador é cliente MCP e descobre
-essas ferramentas dinamicamente. A NWDAF fica em HTTP de propósito — modela a
+essas ferramentas dinamicamente. A NWDAF usa HTTP por design, modelando a
 interface normativa 3GPP `Nnwdaf_AnalyticsInfo` (TS 23.288 / TS 29.520).
 
 **Três camadas:**
@@ -84,24 +84,33 @@ tcc_II/
 │   └── gnb.yaml                # Configuração do gNB (preencher placeholders antes do lab)
 │
 ├── agents/
-│   ├── schema.sql              # Schema PostgreSQL (KPIs, intents, negotiations, policies)
-│   ├── Dockerfile              # imagem única dos 3 agentes (build context = raiz)
-│   ├── db.py                   # conexão PostgreSQL - compartilhada
+│   ├── schema.sql              # Schema PostgreSQL (7 tabelas: KPIs, intents, negotiations, policies, ran_allocations)
+│   ├── Dockerfile              # imagem única dos agentes (build context = raiz)
+│   ├── db.py                   # conexão PostgreSQL - compartilhada (thread-safe)
 │   ├── react.py                # cliente Ollama + loop ReAct - compartilhado
+│   ├── guardrails.py           # validação determinística de parâmetros (pré-dispatch, todos os agentes)
+│   ├── mcp_common.py           # helpers de cliente MCP (list_remote_tools / call_remote_tool)
 │   ├── orchestrator/
-│   │   ├── main.py             # HTTP (POST /intent) + CLI + system prompt 3GPP; cliente MCP
-│   │   ├── tools.py            # 3 ferramentas locais + descoberta MCP das ferramentas de domínio
+│   │   ├── main.py             # HTTP (POST /intent) + CLI + RAG + system prompt 3GPP; cliente MCP
+│   │   ├── tools.py            # 3 ferramentas locais + descoberta MCP + dedup semântica de intents
 │   │   └── scheduler.py        # thread de reversão por janela temporal (UC2); revert via MCP
-│   ├── mcp_common.py          # helpers de cliente MCP (list_remote_tools / call_remote_tool)
-│   ├── cn-nssmf/               # esqueleto: servidor MCP (streamable HTTP, :8001/mcp)
-│   │   ├── main.py             # FastMCP; ferramentas apply_qos/revert_qos/query_nwdaf/check_sla + GET /health
+│   ├── cn-nssmf/
+│   │   ├── main.py             # FastMCP servidor :8001/mcp; ferramentas apply_qos/revert_qos/query_nwdaf/check_sla
 │   │   ├── tools.py            # 5 ferramentas internas (ReAct) + dispatcher
 │   │   └── nwdaf_client.py     # cliente da NWDAF (TS 23.288); cai pra mock se ela estiver fora
-│   ├── ran-nssmf/               # esqueleto: servidor MCP (streamable HTTP, :8002/mcp)
-│   │   ├── main.py             # FastMCP; ferramentas apply_resources/revert_resources/check_sla + GET /health
+│   ├── ran-nssmf/
+│   │   ├── main.py             # FastMCP servidor :8002/mcp; ferramentas apply_resources/revert_resources/check_sla
 │   │   └── tools.py            # 5 ferramentas internas (ReAct) + dispatcher
-│   ├── nwdaf/                   # analytics - não é agente ReAct, é serviço de ML
-│   │   └── main.py             # Flask (POST /analytics); Random Forest real p/ SLICE_LOAD_LEVEL
+│   ├── nwdaf/
+│   │   ├── main.py             # Flask POST /analytics; Random Forest real p/ SLICE_LOAD_LEVEL
+│   │   └── benchmark_rq4.py    # RF vs GBM vs LSTM offline sobre core_kpis (RQ4 do TCC II)
+│   ├── rag/
+│   │   ├── corpus.py           # 35 chunks curados (TS 23.501/23.288/28.312/38.300/28.552 + ReAct/MCP)
+│   │   └── retriever.py        # embeddings bge-small-en-v1.5; recover por cosseno
+│   ├── benchmark/
+│   │   ├── intent_set.py       # 16 intents com gabarito (ground truth para RQ1-RQ3)
+│   │   ├── run_benchmark.py    # runner de uma célula do fatorial; output JSONL
+│   │   └── run_llm_benchmark.py # itera sobre modelos, recria containers, agrega resultados
 │   └── collector/              # amostrador core_kpis + ran_kpis (fonte: prometheus | o1 | mock)
 │       ├── main.py             # loop de coleta -> INSERT core_kpis / ran_kpis
 │       └── o1_client.py        # stub da interface O1/NETCONF do gNB (fonte ideal p/ RAN)
@@ -123,17 +132,17 @@ tcc_II/
 
 | Container | Imagem | IP | Porta exposta |
 |---|---|---|---|
-| mongodb | mongo:4.4 | 10.11.0.2 | — |
-| nrf | gradiant/open5gs:2.6.4 | 10.11.0.10 | — |
-| ausf | gradiant/open5gs:2.6.4 | 10.11.0.11 | — |
-| udm | gradiant/open5gs:2.6.4 | 10.11.0.12 | — |
-| udr | gradiant/open5gs:2.6.4 | 10.11.0.13 | — |
-| pcf | gradiant/open5gs:2.6.4 | 10.11.0.14 | — |
-| bsf | gradiant/open5gs:2.6.4 | 10.11.0.15 | — |
-| nssf | gradiant/open5gs:2.6.4 | 10.11.0.16 | — |
-| scp | gradiant/open5gs:2.6.4 | 10.11.0.17 | — |
+| mongodb | mongo:4.4 | 10.11.0.2 | - |
+| nrf | gradiant/open5gs:2.6.4 | 10.11.0.10 | - |
+| ausf | gradiant/open5gs:2.6.4 | 10.11.0.11 | - |
+| udm | gradiant/open5gs:2.6.4 | 10.11.0.12 | - |
+| udr | gradiant/open5gs:2.6.4 | 10.11.0.13 | - |
+| pcf | gradiant/open5gs:2.6.4 | 10.11.0.14 | - |
+| bsf | gradiant/open5gs:2.6.4 | 10.11.0.15 | - |
+| nssf | gradiant/open5gs:2.6.4 | 10.11.0.16 | - |
+| scp | gradiant/open5gs:2.6.4 | 10.11.0.17 | - |
 | amf | gradiant/open5gs:2.6.4 | 10.11.0.20 | **38412/sctp** |
-| smf | gradiant/open5gs:2.6.4 | 10.11.0.21 | — |
+| smf | gradiant/open5gs:2.6.4 | 10.11.0.21 | - |
 | upf | gradiant/open5gs:2.6.4 | 10.11.0.22 | **2152/udp** |
 | webui | gradiant/open5gs-webui:2.6.4 | 10.11.0.30 | 3000 |
 | postgres | postgres:16-alpine | 10.11.0.40 | 5432 |
@@ -143,7 +152,7 @@ tcc_II/
 | cn-nssmf | build `agents/Dockerfile` | 10.11.0.60 | 8001 |
 | ran-nssmf | build `agents/Dockerfile` | 10.11.0.62 | 8002 |
 | nwdaf | build `agents/Dockerfile` | 10.11.0.63 | 8080 |
-| collector | build `agents/Dockerfile` | 10.11.0.61 | — |
+| collector | build `agents/Dockerfile` | 10.11.0.61 | - |
 
 ---
 
@@ -201,7 +210,7 @@ amf:
 
 ## Agentes Python
 
-Os agentes usam **Ollama** como servidor de inferência local — sem dependência de APIs externas, preservando a privacidade dos dados de telemetria.
+Os agentes usam **Ollama** como servidor de inferência local, sem dependência de APIs externas.
 
 ### Instalar e subir o Ollama
 
@@ -217,17 +226,17 @@ O modelo é selecionado pela variável `MINAS_MODEL` no `.env`.
 
 **`qwen2.5:7b` - padrão do MINAS (desde 12/09/2026):**
 
-Escolhido depois de um smoke test ao vivo comparar 3 candidatos: foi o único que conduziu o loop ReAct completo de ponta a ponta (`record_intent` → `cn_nssmf_*`/`ran_nssmf_*` → `update_intent_status`) de forma consistente, usando o protocolo de tool-calling estruturado do Ollama corretamente. Sem fine-tuning de telecom, a mitigação de alucinação de domínio depende inteiramente dos `guardrails.py` determinísticos. Isso foi um teste informal (poucas execuções), não o benchmark rigoroso que o TCC I promete (P6: comparar candidatos num conjunto de intenções derivado da TS 28.312, medindo acurácia de tool-calling), esse benchmark formal ainda é trabalho pendente.
+Escolhido depois de um smoke test comparando 3 candidatos: foi o único que completou o loop ReAct de ponta a ponta (`record_intent` -> `cn_nssmf_*`/`ran_nssmf_*` -> `update_intent_status`), usando o formato de tool-calling estruturado do Ollama corretamente. Sem fine-tuning de telecom, a mitigação de alucinação de domínio depende dos `guardrails.py` determinísticos. O smoke test foi informal (poucas execuções), não o benchmark rigoroso prometido no TCC I (P6: comparar candidatos num conjunto de intenções derivado da TS 28.312, medindo acurácia de tool-calling). Esse benchmark formal ainda é trabalho pendente.
 
 **Por que não OTel-LLM-E4B-IT (ou qualquer outro tamanho da família OTel-LLM):**
 
-O projeto [OTel (Open Telco AI)](https://github.com/farbodtavakkoli/OTel), com contribuição da GSMA, disponibiliza a série [OTel-LLM](https://huggingface.co/collections/farbodtavakkoli/otel-llm) (270 M–32 B parâmetros), fine-tuned em specs 3GPP/O-RAN/ETSI/ITU. Era a escolha óbvia pro domínio do MINAS, e chegou a ser o padrão por um tempo: **OTel-LLM-E4B-IT** tem 91,7% de correctness no eval "context-grounded generation" da própria OTel (melhor resultado publicado na categoria).
+O projeto [OTel (Open Telco AI)](https://github.com/farbodtavakkoli/OTel), com contribuição da GSMA, disponibiliza a série [OTel-LLM](https://huggingface.co/collections/farbodtavakkoli/otel-llm) (270 M a 32 B parâmetros), fine-tuned em specs 3GPP/O-RAN/ETSI/ITU. Era a escolha natural pro domínio do MINAS: **OTel-LLM-E4B-IT** tem 91,7% de correctness no eval "context-grounded generation" da própria OTel (melhor resultado publicado na categoria).
 
-**Não funcionou (1ª tentativa, sem RAG):** toda a família OTel-LLM é treinada com a mesma receita — pergunta + trecho de contexto recuperado + resposta, mais exemplos de **abstenção** quando o contexto não contém a resposta. Sem RAG, o modelo nunca recebia o bloco de "contexto recuperado" que espera, e o reflexo treinado era abster-se em vez de tentar uma ferramenta: nunca chamou nenhuma ferramenta, respondendo direto "Answer not found in the retrieved context." (`llama3.1:8b` também foi testado e descartado: emite a chamada de ferramenta como texto solto em vez de usar o campo `tool_calls` estruturado do Ollama.)
+**Não funcionou (1ª tentativa, sem RAG):** toda a família OTel-LLM é treinada com a mesma receita: pergunta + trecho de contexto recuperado + resposta, mais exemplos de **abstenção** quando o contexto não contém a resposta. Sem RAG, o modelo nunca recebia o bloco de "contexto recuperado" que espera, e o reflexo treinado era abster-se em vez de tentar uma ferramenta: nunca chamou nenhuma ferramenta, respondendo direto "Answer not found in the retrieved context." (`llama3.1:8b` também foi testado e descartado: emite a chamada de ferramenta como texto solto em vez de usar o campo `tool_calls` estruturado do Ollama.)
 
-**RAG (P3) já foi implementado** (`agents/rag/`) e o teste foi repetido com contexto de verdade injetado — resultado: **ainda não funciona, mas por um motivo diferente**. O modelo parou de abster-se, só que em vez de chamar as ferramentas ele **alucinou uma resposta completa** (números de throughput/SLA inventados, sem nenhum `tool_use` no trace). Ou seja, o RAG resolveu o sintoma (abstenção) mas não a causa raiz: o próprio model card da OTel já avisa que o mix de treino não tem exemplos de tool-calling específicos de telecom — isso é o gargalo real, com ou sem contexto recuperado. Achado de 12/09/2026, ver `HANDOVER-2026-09-12.md`.
+**RAG (P3) já foi implementado** (`agents/rag/`) e o teste foi repetido com contexto de verdade injetado. Resultado: **ainda não funciona, mas por um motivo diferente**. O modelo parou de abster-se, só que em vez de chamar as ferramentas ele **alucionou uma resposta completa** (números de throughput/SLA inventados, sem nenhum `tool_use` no trace). O RAG resolveu o sintoma (abstenção) mas não a causa raiz: o próprio model card da OTel avisa que o mix de treino não tem exemplos de tool-calling específicos de telecom, com ou sem contexto recuperado. Achado de 12/09/2026, ver `HANDOVER-2026-09-12.md`.
 
-Guia de conversão (mantido pra quando isso for revisitado, os modelos são publicados em `.bin` pytorch; pra usar via Ollama, converter para GGUF com `llama.cpp`; a OTel também lista quantizações prontas em `inference/ollama` no repo, **confira lá primeiro**, pode poupar todo o processo abaixo):
+Guia de conversão (mantido pra quando isso for revisitado; os modelos são publicados em `.bin` pytorch; pra usar via Ollama, converter para GGUF com `llama.cpp`; a OTel também lista quantizações prontas em `inference/ollama` no repo, **confira lá primeiro**, pode poupar todo o processo abaixo):
 
 ```bash
 # 0. Espaço em disco: reserve ~70GB temporários (31,5GB download + ~16GB
@@ -256,15 +265,15 @@ EOF
 echo "MINAS_MODEL=otel-llm-e4b-it" >> .env
 ```
 
-Outras variantes da série, por tamanho *efetivo* nomeado pela OTel (o tamanho real em disco pode ser maior, como no E4B acima — confira o repositório de cada uma antes de baixar):
+Outras variantes da série, por tamanho *efetivo* nomeado pela OTel (o tamanho real em disco pode ser maior, como no E4B acima; confira o repositório de cada uma antes de baixar):
 
 | Modelo | Parâmetros (nome) | Observação |
 |---|---|---|
 | OTel-LLM-1B-IT | 1 B | menor da linha, CPU ok |
 | OTel-LLM-3B-IT | 3 B | leve |
-| OTel-LLM-E4B-IT | "E4B" (efetivo) | ~8B params reais, ~31,5GB de download, ~5GB depois de quantizado — não funciona sem RAG (ver acima) |
-| OTel-LLM-7B-IT | 7 B | — |
-| OTel-LLM-8.3B-IT | 8.3 B | — |
+| OTel-LLM-E4B-IT | "E4B" (efetivo) | ~8B params reais, ~31,5GB de download, ~5GB depois de quantizado; não funciona sem RAG (ver acima) |
+| OTel-LLM-7B-IT | 7 B | |
+| OTel-LLM-8.3B-IT | 8.3 B | |
 | OTel-LLM-14B-IT | 14 B | maior, exige mais RAM/VRAM |
 
 **Genérico (fallback, sem fine-tuning de domínio):**
@@ -274,6 +283,8 @@ MINAS_MODEL=llama3.1:70b
 ```
 
 
+
+### Orquestrador (`agents/orchestrator/`)
 
 Recebe intenção em linguagem natural e conduz o loop ReAct até resolver. Roda em
 dois modos:
@@ -285,7 +296,7 @@ pip install -r ../../requirements.txt
 # modo CLI (uma intenção, imprime o resultado)
 python main.py "Aumentar a taxa de dados garantida para a fatia de streaming de 10 Mbps para 20 Mbps entre 18h e 22h."
 
-# modo serviço (sem argumentos) — escuta em :8000
+# modo serviço (sem argumentos), escuta em :8000
 python main.py
 curl -X POST localhost:8000/intent -H 'content-type: application/json' \
   -d '{"intent": "Aumentar a taxa garantida da fatia de streaming para 20 Mbps entre 18h e 22h."}'
@@ -301,8 +312,8 @@ Locais (só PostgreSQL):
 | `get_sla_status` | Lê KPIs da slice no banco |
 | `update_intent_status` | Atualiza ciclo de vida da intenção |
 
-De domínio - **descobertas via MCP** nos servidores CN-NSSMF/RAN-NSSMF na
-primeira execução e apresentadas ao LLM com prefixo de agente (pra os dois
+De domínio, **descobertas via MCP** nos servidores CN-NSSMF/RAN-NSSMF na
+primeira execução e apresentadas ao LLM com prefixo de agente (para os dois
 `check_sla` não colidirem):
 
 | Ferramenta (no LLM) | Servidor MCP | Ação remota |
@@ -314,7 +325,7 @@ primeira execução e apresentadas ao LLM com prefixo de agente (pra os dois
 (`scheduler.py`) que a cada `SCHEDULER_INTERVAL_SECONDS` (default 15s)
 verifica `intents` com `window_end` vencido e status `applied`/`degraded`, e
 chama as ferramentas MCP `revert_qos`/`revert_resources` nos servidores
-CN-NSSMF/RAN-NSSMF - sem passar pelo LLM, já que é um gatilho determinístico
+CN-NSSMF/RAN-NSSMF. Não passa pelo LLM, pois é um gatilho determinístico
 por tempo. Só marca a intent como `reverted` quando os dois agentes
 confirmam; senão tenta de novo na próxima varredura. Não roda no modo CLI
 (processo de execução única).
@@ -374,8 +385,8 @@ curl localhost:8002/health
 | `get_ran_kpis` | Agrega os últimos ~30 s de `ran_kpis` da slice | real (tabela `ran_kpis`) |
 | `get_slice_load` | Índice de carga da slice; computa e persiste se estiver defasado | real (tabela `slice_load`) |
 | `estimate_capacity` | PRBs necessários p/ um alvo de throughput e se cabem no orçamento | modelo estático (`# TODO` link adaptation) |
-| `allocate_prb` | Define a fração de PRB da slice no gNB | stub (`# TODO` RIC/xApp E2) |
-| `revert_prb` | Restaura a alocação anterior de uma intent | stub (`# TODO` persistir alocações) |
+| `allocate_prb` | Define a fração de PRB da slice no gNB | stub (`# TODO` RIC/xApp E2); persiste em `ran_allocations` mas não toca o gNB |
+| `revert_prb` | Restaura a alocação anterior de uma intent | real (tabela `ran_allocations`) |
 
 Modelo de rádio configurável por env: `RAN_PRB_TOTAL` (default 51), `RAN_MBPS_PER_PRB` (default 0.40).
 
@@ -402,8 +413,14 @@ curl -X POST localhost:8080/analytics -H 'content-type: application/json' \
 Se o histórico ainda for curto (`collector` rodando há pouco tempo), cai pra
 mock com `reason: "insufficient history in core_kpis"`. Se a NWDAF estiver
 fora do ar, o `nwdaf_client` do CN-NSSMF absorve o erro e também cai pra mock,
-o loop ReAct não quebra. Comparação com Gradient Boosting e LSTM (pedida no
-TCC I cap. 4) é trabalho de avaliação para o relatório, não foi feita aqui.
+o loop ReAct não quebra.
+
+O script `agents/nwdaf/benchmark_rq4.py` roda a comparação RF vs. Gradient Boosting vs.
+LSTM (prometida no TCC I cap. 4) de forma offline sobre o histórico de `core_kpis`:
+
+```bash
+POSTGRES_HOST=localhost python agents/nwdaf/benchmark_rq4.py
+```
 
 Configurável por env: `NWDAF_N_LAGS` (default 5), `NWDAF_HISTORY_LIMIT`
 (default 500), `NWDAF_MIN_TRAINING_ROWS` (default 5),
@@ -421,7 +438,7 @@ Fonte plugável por tabela:
 | Fonte | `core_kpis` | `ran_kpis` | Descrição |
 |---|:---:|:---:|---|
 | `prometheus` | ✔ (padrão) | ✔ | Prometheus HTTP API sobre os exportadores Open5GS. RAN só consegue aproximar throughput pelos contadores N3 da UPF (HANDOVER-2026-08-25, "Opção 1"); RSRP/SINR/MCS/PRB ficam `NULL`. |
-| `o1` | — | ✔ | **ideal para RAN**: NETCONF/YANG contra o gNB (TS 28.552). Stub em `o1_client.py` — não conectado (depende do software do gNB, HANDOVER-2026-09-01 §3). |
+| `o1` | - | ✔ | **ideal para RAN**: NETCONF/YANG contra o gNB (TS 28.552). Stub em `o1_client.py`, não conectado (depende do software do gNB, HANDOVER-2026-09-01 §3). |
 | `mock` | ✔ | ✔ (padrão) | linhas sintéticas, para desenvolver o pipeline antes das métricas reais existirem. |
 
 Open5GS 2.6.4 expõe poucas métricas rotuladas por slice, então o agregado é
@@ -443,6 +460,62 @@ CORE_SOURCE=mock RAN_SOURCE=mock SLICES=1,2 python main.py
 
 ---
 
+## Guardrails (`agents/guardrails.py`)
+
+Validação determinística invocada **antes de todo `dispatch_tool`** nos três agentes.
+Verifica restrições derivadas das specs 3GPP (TS 23.501, TS 28.312):
+- SST ∈ {1, 2}
+- throughput > 0
+- GBR ≤ MBR
+- 5QI ∈ [1, 86]
+- `window_end` > `window_start`
+
+Uma violação retorna `{"error": "...", "guardrail": true}` como resultado da
+ferramenta. O LLM recebe o erro e pode corrigir no próximo passo do ReAct.
+
+Controlável por env para o benchmark de ablação (RQ3):
+
+| Variável | Padrão | Efeito quando `false` |
+|---|---|---|
+| `GUARDRAILS_ENABLED` | `true` | Loga a violação mas não bloqueia a chamada |
+
+---
+
+## RAG (`agents/rag/`)
+
+Corpus de 35 trechos curados das specs 3GPP (TS 23.501, TS 23.288, TS 28.312,
+TS 38.300, TS 28.552) + padrões ReAct e MCP, embeddados com `BAAI/bge-small-en-v1.5`.
+O orquestrador recupera os trechos mais similares à intenção recebida e os injeta
+no contexto antes do loop ReAct começar.
+
+Controlável por env para o benchmark de ablação (RQ3):
+
+| Variável | Padrão | Efeito quando `false` |
+|---|---|---|
+| `RAG_ENABLED` | `true` | Loop ReAct roda sem contexto recuperado |
+
+---
+
+## Benchmark (`agents/benchmark/`)
+
+Scripts para a avaliação sistemática do TCC II:
+
+| Script | O que faz |
+|---|---|
+| `intent_set.py` | 16 intents com gabarito (SST, throughput, janela, ferramentas esperadas) |
+| `run_benchmark.py` | Roda uma célula do fatorial (1 modelo × 1 configuração de ablação) e salva JSONL |
+| `run_llm_benchmark.py` | Itera sobre múltiplos modelos: recria containers, aguarda /health, delega ao `run_benchmark.py`, imprime tabela comparativa |
+
+Para rodar o benchmark de LLM (requer Docker + Ollama):
+
+```bash
+python agents/benchmark/run_llm_benchmark.py \
+  --models qwen2.5:7b llama3.1:8b \
+  --repeats 3
+```
+
+---
+
 ## Banco de dados (PostgreSQL)
 
 Schema em `agents/schema.sql`. Tabelas principais:
@@ -454,7 +527,8 @@ Schema em `agents/schema.sql`. Tabelas principais:
 | `slice_load` | Índice de carga computado por slice |
 | `intents` | Intenções recebidas pelo orquestrador |
 | `negotiations` | Rodadas de negociação CN-NSSMF ↔ RAN-NSSMF |
-| `policies` | Políticas aplicadas e seu ciclo de vida |
+| `policies` | Políticas de QoS aplicadas e seu ciclo de vida |
+| `ran_allocations` | Alocações de PRB por intent (permite revert_prb rastreável) |
 
 ---
 
