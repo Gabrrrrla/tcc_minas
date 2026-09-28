@@ -1,0 +1,36 @@
+# Lab overlay (UNISINOS server with srsRAN + Liteon RU). On top of the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d
+#
+# Assumes the gNB runs NATIVELY on the same Linux host (DPDK), reaching the
+# core straight over the docker bridge — no port publishing/NAT on N2/N3:
+#   srsran gnb.yaml:  amf.addr 10.11.0.20 (AMF),  amf.bind_addr 10.11.0.1 (bridge gateway)
+#   upf.lab.yaml:     GTP-U advertised as 10.11.0.22 (UPF), instead of 127.0.0.1
+# Run scripts/lab_preflight.sh on the host first (SCTP module, subnet clash,
+# Ollama reachability, ports).
+
+services:
+  upf:
+    volumes:
+      - ./open5gs/upf.lab.yaml:/opt/open5gs/etc/open5gs/upf.yaml
+    # Same TUN setup as the base file, plus NAT so UE traffic can leave the
+    # UPF (to the iperf server below, or the internet if the host has it).
+    command:
+      - "ip tuntap add name ogstun mode tun 2>/dev/null || true; ip addr add 10.45.0.1/16 dev ogstun 2>/dev/null || true; ip link set ogstun up; ip tuntap add name ogstun2 mode tun 2>/dev/null || true; ip addr add 10.46.0.1/16 dev ogstun2 2>/dev/null || true; ip link set ogstun2 up; echo 1 > /proc/sys/net/ipv4/ip_forward; iptables -t nat -C POSTROUTING -s 10.45.0.0/16 ! -o ogstun -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.45.0.0/16 ! -o ogstun -j MASQUERADE; iptables -t nat -C POSTROUTING -s 10.46.0.0/16 ! -o ogstun2 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.46.0.0/16 ! -o ogstun2 -j MASQUERADE; exec open5gs-upfd"
+
+  # Traffic target for the UEs: `iperf3 -c 10.11.0.70 -R -b 20M` from a UE on
+  # the eMBB slice drives DL demand at the intent's target, which is what makes
+  # the SLA compliance rate meaningful (agents/benchmark/sla_report.py).
+  iperf:
+    image: networkstatic/iperf3:latest
+    container_name: iperf
+    command: ["-s"]
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.70
+    depends_on: [upf]
+
+  collector:
+    environment:
+      CORE_SOURCE: prometheus    # real per-slice throughput from upf-netdev (ogstun/ogstun2)
+      RAN_SOURCE: prometheus     # UPF-side throughput until a RAN_SOURCE=srsran exists

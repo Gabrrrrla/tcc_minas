@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import timeutil
 from db import get_db_conn
 from guardrails import check as guardrail_check
 from mcp_common import call_remote_tool, list_remote_tools
@@ -46,7 +47,9 @@ LOCAL_TOOL_SCHEMAS: list[dict] = [
             "name": "record_intent",
             "description": (
                 "Persist a decoded operator intent to the database before any action is taken. "
-                "Must be called as the first step after receiving a new intent."
+                "Must be called as the first step after receiving a new intent. If the window "
+                "starts in the future the intent is stored as 'scheduled': do NOT call the domain "
+                "agents for it — the scheduler applies it at window_start and reverts it at window_end."
             ),
             "parameters": {
                 "type": "object",
@@ -54,8 +57,8 @@ LOCAL_TOOL_SCHEMAS: list[dict] = [
                     "raw_text":        {"type": "string",  "description": "Original natural-language intent"},
                     "sst":             {"type": "integer", "description": "Target slice SST (1 or 2)"},
                     "target_thp_mbps": {"type": "number",  "description": "Requested throughput guarantee in Mbps"},
-                    "window_start":    {"type": "string",  "description": "ISO-8601 start of enforcement window (optional)"},
-                    "window_end":      {"type": "string",  "description": "ISO-8601 end of enforcement window (optional)"},
+                    "window_start":    {"type": "string",  "description": "ISO-8601 start of enforcement window, with UTC offset (optional)"},
+                    "window_end":      {"type": "string",  "description": "ISO-8601 end of enforcement window, with UTC offset (optional)"},
                 },
                 "required": ["raw_text", "sst"],
             },
@@ -101,6 +104,14 @@ LOCAL_TOOL_SCHEMAS: list[dict] = [
 # ---------------------------------------------------------------------------
 # MCP discovery of domain-agent tools (lazy, cached, retried until complete)
 # ---------------------------------------------------------------------------
+
+# A window starting within this many seconds is applied right away rather
+# than scheduled (covers "from now until 22h" and LLM rounding of "now").
+ACTIVATION_GRACE_SECONDS = int(os.getenv("ACTIVATION_GRACE_SECONDS", "60"))
+
+_SCHEDULED_NOTE = ("Scheduled: do NOT call cn_nssmf_*/ran_nssmf_* for this intent now and do "
+                   "not call update_intent_status — the scheduler applies it at window_start and "
+                   "reverts it at window_end. Tell the operator it is scheduled and stop.")
 
 _remote_schemas: list[dict] = []
 _remote_routing: dict[str, tuple[str, str]] = {}   # prefixed name -> (base_url, real name)
@@ -169,6 +180,14 @@ def _record_intent(params: dict) -> dict:
     target_thp_mbps = _clean(params.get("target_thp_mbps"))
     window_start    = _clean(params.get("window_start"))
     window_end      = _clean(params.get("window_end"))
+    # aware datetimes, naive input read as operator-local (MINAS_TZ): a naive
+    # string handed to Postgres would be taken in the session zone (UTC)
+    if window_start is not None:
+        window_start = timeutil.parse_iso(window_start)
+    if window_end is not None:
+        window_end = timeutil.parse_iso(window_end)
+    scheduled = (window_start is not None and
+                 (window_start - timeutil.now()).total_seconds() > ACTIVATION_GRACE_SECONDS)
 
     with conn, conn.cursor() as cur:
         # Semantic-duplicate guard: the model sometimes calls record_intent
@@ -185,30 +204,50 @@ def _record_intent(params: dict) -> dict:
         # after this exact pattern was observed live (HANDOVER-2026-09-12.md).
         cur.execute(
             """
-            SELECT id FROM intents
+            SELECT id, status FROM intents
              WHERE sst = %s
                AND target_thp_mbps IS NOT DISTINCT FROM %s
                AND window_start    IS NOT DISTINCT FROM %s
                AND window_end      IS NOT DISTINCT FROM %s
                AND received_at > NOW() - INTERVAL '2 minutes'
+               AND status <> 'reverted'
              ORDER BY id DESC LIMIT 1
             """,
             (sst, target_thp_mbps, window_start, window_end),
         )
         existing = cur.fetchone()
         if existing:
-            return {"intent_id": existing[0], "status": "received", "note": "reused a matching intent recorded moments ago instead of duplicating it"}
+            out = {"intent_id": existing[0], "status": existing[1],
+                   "note": "reused a matching intent recorded moments ago instead of duplicating it"}
+            if existing[1] == "scheduled":
+                out["note"] += ". " + _SCHEDULED_NOTE
+            return out
 
         cur.execute(
             """
             INSERT INTO intents (raw_text, sst, target_thp_mbps, window_start, window_end, status)
-            VALUES (%s, %s, %s, %s, %s, 'received')
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
-            (params["raw_text"], sst, target_thp_mbps, window_start, window_end),
+            (params["raw_text"], sst, target_thp_mbps, window_start, window_end,
+             "scheduled" if scheduled else "received"),
         )
         intent_id = cur.fetchone()[0]
+    if scheduled:
+        return {"intent_id": intent_id, "status": "scheduled",
+                "activates_at": window_start.isoformat(), "note": _SCHEDULED_NOTE}
     return {"intent_id": intent_id, "status": "received"}
+
+
+def intent_status(intent_id: Any) -> str | None:
+    try:
+        iid = int(intent_id)
+    except (TypeError, ValueError):
+        return None
+    with get_db_conn().cursor() as cur:
+        cur.execute("SELECT status FROM intents WHERE id = %s", (iid,))
+        row = cur.fetchone()
+    return row[0] if row else None
 
 
 def _get_sla_status(params: dict) -> dict:
@@ -256,6 +295,12 @@ def _get_sla_status(params: dict) -> dict:
 
 
 def _update_intent_status(params: dict) -> dict:
+    # A scheduled intent's lifecycle belongs to the scheduler (it moves it to
+    # applied/degraded at window_start); the LLM reporting "applied" for it
+    # now would make the reversion scheduler treat it as already in force.
+    if intent_status(params["intent_id"]) == "scheduled":
+        return {"intent_id": params["intent_id"], "status": "scheduled", "unchanged": True,
+                "note": "status is managed by the scheduler until window_start"}
     conn = get_db_conn()
     with conn, conn.cursor() as cur:
         cur.execute(
@@ -291,6 +336,11 @@ def dispatch_tool(name: str, params: dict) -> dict:
 
     if name in _remote_routing:
         base_url, real = _remote_routing[name]
+        # Deterministic, not left to the prompt: a scheduled intent must not
+        # reach the Core/RAN before its window opens.
+        if real.startswith("apply_") and intent_status(params.get("intent_id")) == "scheduled":
+            return {"status": "scheduled", "blocked": True, "intent_id": params.get("intent_id"),
+                    "note": _SCHEDULED_NOTE}
         return call_remote_tool(base_url, real, params)
 
     return {"error": f"unknown tool: {name}"}

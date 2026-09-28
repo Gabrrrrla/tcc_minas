@@ -9,7 +9,11 @@ The CN-NSSMF manages 5G Core slice resources. Its 5 tools:
   configure_qos  — apply GBR/MBR/5QI for a slice at PCF (policy) + SMF (session)
   revert_qos     — restore the previous QoS configuration for an intent
   get_core_kpis  — read the latest core telemetry for a slice (core_kpis table)
-  record_policy  — persist an applied policy to the policies table
+  record_policy  — amend the policy row configure_qos already wrote (upsert)
+
+configure_qos persists its own policy row: revert_qos can only undo what is in
+`policies`, so leaving the write to a separate tool the LLM might skip meant an
+applied QoS change could never be reverted.
 """
 
 from __future__ import annotations
@@ -24,6 +28,12 @@ from nwdaf_client import get_analytics
 #   SST=1 eMBB  -> 5QI 9  (non-GBR, best effort)
 #   SST=2 URLLC -> 5QI 82 (delay-critical GBR)
 DEFAULT_5QI = {1: 9, 2: 82}
+
+# What the subscribers are provisioned with before MINAS touches anything
+# (scripts/provision.js: both sessions use qos.index 9, no GBR) — this is the
+# state a revert returns to when no other policy is active for the slice.
+BASELINE_QOS = {1: {"qos_5qi": 9, "gbr_dl_mbps": None, "mbr_dl_mbps": None},
+                2: {"qos_5qi": 9, "gbr_dl_mbps": None, "mbr_dl_mbps": None}}
 
 # ---------------------------------------------------------------------------
 # Tool schemas — Ollama format: {type: "function", function: {name, description, parameters}}
@@ -113,7 +123,11 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "record_policy",
-            "description": "Persist an applied policy to the policies table for auditing and later revert.",
+            "description": (
+                "Amend the policy row for an intent (configure_qos already records it). "
+                "Only needed to correct the recorded values; calling it again for the same "
+                "intent updates that row instead of adding a new one."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -143,9 +157,59 @@ def _query_nwdaf(params: dict) -> dict:
 
 
 def _current_qos(sst: int) -> dict:
-    # TODO: read the live PCC rule / session parameters from PCF + SMF
-    # (Npcf_SMPolicyControl / Nsmf_PDUSession, or the Open5GS provisioning API).
-    return {"sst": sst, "qos_5qi": DEFAULT_5QI.get(sst), "gbr_dl_mbps": None, "source": "mock"}
+    """QoS currently in force for the slice: the newest active policy, or the
+    provisioned baseline when none is active.
+    TODO: read it live from PCF/SMF once enforcement is real."""
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, intent_id, qos_5qi, gbr_dl_mbps, mbr_dl_mbps
+              FROM policies
+             WHERE sst = %s AND status = 'active'
+          ORDER BY applied_at DESC
+             LIMIT 1
+            """,
+            (sst,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return {"sst": sst, **BASELINE_QOS.get(sst, {}), "source": "provisioned-baseline"}
+    return {"sst": sst, "qos_5qi": row[2], "gbr_dl_mbps": row[3], "mbr_dl_mbps": row[4],
+            "source": f"policy {row[0]} (intent {row[1]})"}
+
+
+def _upsert_policy(intent_id: int, sst: int, enforced_thp_mbps: float,
+                   qos_5qi: int | None, gbr_dl_mbps: float | None,
+                   mbr_dl_mbps: float | None) -> tuple[int, bool]:
+    """One active policy row per (intent, slice). Returns (policy_id, created)."""
+    conn = get_db_conn()
+    with conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE policies
+               SET enforced_thp_mbps = %s,
+                   qos_5qi     = COALESCE(%s, qos_5qi),
+                   gbr_dl_mbps = COALESCE(%s, gbr_dl_mbps),
+                   mbr_dl_mbps = COALESCE(%s, mbr_dl_mbps)
+             WHERE intent_id = %s AND sst = %s AND status = 'active'
+         RETURNING id
+            """,
+            (enforced_thp_mbps, qos_5qi, gbr_dl_mbps, mbr_dl_mbps, intent_id, sst),
+        )
+        row = cur.fetchone()
+        if row is not None:
+            return row[0], False
+        cur.execute(
+            """
+            INSERT INTO policies
+                (intent_id, sst, enforced_thp_mbps, qos_5qi, gbr_dl_mbps, mbr_dl_mbps, status)
+            VALUES (%s, %s, %s, %s, %s, %s, 'active')
+         RETURNING id
+            """,
+            (intent_id, sst, enforced_thp_mbps, qos_5qi, gbr_dl_mbps, mbr_dl_mbps),
+        )
+        return cur.fetchone()[0], True
 
 
 def _configure_qos(params: dict) -> dict:
@@ -164,10 +228,13 @@ def _configure_qos(params: dict) -> dict:
         "qos_5qi":     qos_5qi,
         "gbr_dl_mbps": gbr_dl,
         "gbr_ul_mbps": params.get("gbr_ul_mbps"),
-        "mbr_dl_mbps": params.get("mbr_dl_mbps", gbr_dl),
+        "mbr_dl_mbps": params.get("mbr_dl_mbps") or gbr_dl,
         "mbr_ul_mbps": params.get("mbr_ul_mbps"),
     }
-    return {"status": "applied", "targets": ["pcf", "smf"], "applied": applied, "previous": previous}
+    policy_id, _ = _upsert_policy(params["intent_id"], sst, gbr_dl, qos_5qi,
+                                  gbr_dl, applied["mbr_dl_mbps"])
+    return {"status": "applied", "targets": ["pcf", "smf"], "applied": applied,
+            "previous": previous, "policy_id": policy_id}
 
 
 def _revert_qos(params: dict) -> dict:
@@ -183,11 +250,17 @@ def _revert_qos(params: dict) -> dict:
             """,
             (intent_id,),
         )
-        row = cur.fetchone()
-    if row is None:
+        rows = cur.fetchall()
+    if not rows:
         return {"status": "noop", "reason": f"no active policy for intent {intent_id}"}
     # TODO: push the restored PCC rule / session parameters back to PCF + SMF.
-    return {"status": "reverted", "policy_id": row[0], "sst": row[1], "restored_from_thp_mbps": row[2]}
+    return {
+        "status": "reverted",
+        "policy_ids": [r[0] for r in rows],
+        "sst": rows[0][1],
+        "restored_from_thp_mbps": rows[0][2],
+        "now_in_force": _current_qos(rows[0][1]),
+    }
 
 
 def _get_core_kpis(params: dict) -> dict:
@@ -220,26 +293,11 @@ def _get_core_kpis(params: dict) -> dict:
 
 
 def _record_policy(params: dict) -> dict:
-    conn = get_db_conn()
-    with conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO policies
-                (intent_id, sst, enforced_thp_mbps, qos_5qi, gbr_dl_mbps, mbr_dl_mbps, status)
-            VALUES (%s, %s, %s, %s, %s, %s, 'active')
-         RETURNING id
-            """,
-            (
-                params["intent_id"],
-                params["sst"],
-                params["enforced_thp_mbps"],
-                params.get("qos_5qi"),
-                params.get("gbr_dl_mbps"),
-                params.get("mbr_dl_mbps"),
-            ),
-        )
-        policy_id = cur.fetchone()[0]
-    return {"policy_id": policy_id, "status": "active"}
+    policy_id, created = _upsert_policy(
+        params["intent_id"], params["sst"], params["enforced_thp_mbps"],
+        params.get("qos_5qi"), params.get("gbr_dl_mbps"), params.get("mbr_dl_mbps"),
+    )
+    return {"policy_id": policy_id, "status": "active", "created": created}
 
 
 # ---------------------------------------------------------------------------

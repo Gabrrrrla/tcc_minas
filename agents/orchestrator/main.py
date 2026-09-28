@@ -9,8 +9,11 @@ Backend   : Ollama (local inference server) — see agents/react.py
 Transport : HTTP POST /intent  (operator / tests)   +   CLI  (python main.py "<intent>")
 """
 
+import json
+import math
 import os
 import sys
+import threading
 
 # make agents/ importable (shared db.py + react.py) whether run via Docker or `cd agents/orchestrator`
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,9 +21,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flask import Flask, jsonify, request
 
 import scheduler
+import sla_monitor
+import timeutil
+from db import get_db_conn
 from rag.retriever import format_context, retrieve
 from react import MODEL, OLLAMA_URL, react_loop
-from tools import dispatch_tool, get_tool_schemas
+from tools import dispatch_tool, get_tool_schemas, intent_status
 
 PORT = int(os.getenv("ORCHESTRATOR_PORT", "8000"))
 
@@ -62,35 +68,42 @@ Multi-Agent System for autonomous 5G network slice management.
    are affected.
 3. If resources are insufficient, apply graceful degradation:
    notify the operator, log the SLA violation, redistribute if policy allows.
-4. Windowed intents (window_end) revert automatically once the window closes —
-   handled by the background scheduler, not by you. You never need to schedule
-   or trigger a revert yourself; just record window_end via record_intent.
+4. Windows are handled by the background scheduler, not by you. Record
+   window_start/window_end (ISO-8601 with UTC offset, resolved against the
+   current date/time given with the intent) via record_intent. If
+   record_intent answers status "scheduled", the window opens later: do NOT
+   call cn_nssmf_*/ran_nssmf_* and do NOT call update_intent_status — the
+   scheduler applies it at window_start and reverts it at window_end; just
+   tell the operator when it will take effect. You never trigger reverts.
 5. Call record_intent exactly once per operator request — never re-record the
    same request under a new intent_id.
-6. Before your final response, you MUST call update_intent_status exactly
-   once, reflecting the true final status (applied / degraded / failed) —
-   never rely on your text response alone to report the outcome.
+6. For an intent you applied now, before your final response you MUST call
+   update_intent_status exactly once, reflecting the true final status
+   (applied / degraded / failed) — never rely on your text response alone.
+7. A message starting with "## Event" is a report from a domain agent about
+   an intent that already exists, not a new operator intent: do NOT call
+   record_intent; act on the intent_id it names, as it instructs.
 """
 
 app = Flask(__name__)
 
 
 def _infer_status_for_intent(trace: list[dict], intent_id: int) -> str:
-    """Heuristic fallback status when the model never called
-    update_intent_status for this intent_id: 'applied' if every
-    cn_nssmf_*/ran_nssmf_* call addressed to this intent_id came back without
-    an "error" key, 'failed' otherwise. Deliberately simple — it only has to
-    get the intent out of 'received'/'negotiating' so the scheduler can see
-    it; it doesn't distinguish 'applied' from 'degraded' (that needs
-    structured status from the domain agents, which they don't return today
-    — see HANDOVER-2026-09-12.md)."""
-    remote_calls = [
+    """Fallback status when the model never called update_intent_status for
+    this intent_id, from the domain agents' STRUCTURED status on their apply
+    calls: 'failed' if an apply call errored or reported failed (or none was
+    made), 'degraded' if any reported degraded, else 'applied'."""
+    applies = [
         t for t in trace
-        if t["tool"].startswith(("cn_nssmf_", "ran_nssmf_")) and t["input"].get("intent_id") == intent_id
+        if t["tool"].startswith(("cn_nssmf_apply", "ran_nssmf_apply"))
+        and t["input"].get("intent_id") == intent_id
     ]
-    if not remote_calls:
+    if not applies:
         return "failed"
-    return "failed" if any("error" in t["result"] for t in remote_calls) else "applied"
+    statuses = [t["result"].get("status") for t in applies]
+    if any("error" in t["result"] for t in applies) or "failed" in statuses:
+        return "failed"
+    return "degraded" if "degraded" in statuses else "applied"
 
 
 
@@ -115,7 +128,13 @@ def run(intent_text: str) -> dict:
     else:
         print("[orchestrator] RAG disabled (ablation) — no context retrieved")
         context_block = ""
-    user_content = f"{context_block}\n\n## Intenção do operador\n{intent_text}" if context_block else intent_text
+    # current date/time/zone first: the model has no clock, and windows like
+    # "from 18h to 22h" / "tonight" are meaningless without it
+    parts = [timeutil.prompt_header()]
+    if context_block:
+        parts.append(context_block)
+    parts.append(f"## Intenção do operador\n{intent_text}")
+    user_content = "\n\n".join(parts)
 
     result = react_loop(SYSTEM_PROMPT, user_content, get_tool_schemas(), dispatch_tool, tag="orchestrator")
     trace = result["trace"]
@@ -137,6 +156,8 @@ def run(intent_text: str) -> dict:
         if t["tool"] == "update_intent_status" and "intent_id" in t.get("input", {})
     }
     for intent_id in created_ids - updated_ids:
+        if intent_status(intent_id) == "scheduled":
+            continue  # owned by the scheduler until window_start
         status = _infer_status_for_intent(trace, intent_id)
         print(f"[orchestrator] safety-net: update_intent_status not called by the model "
               f"for intent {intent_id} — setting it to '{status}' deterministically")
@@ -157,6 +178,95 @@ def intent_endpoint():
         return jsonify({"error": str(exc)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Use Case 1: events reported by the domain agents (cn-nssmf/monitor.py)
+# ---------------------------------------------------------------------------
+
+# how much above the predicted demand the new guarantee is sized
+UC1_HEADROOM = float(os.getenv("UC1_HEADROOM", "0.10"))
+
+EVENT_TEMPLATE = """## Event from CN-NSSMF — Use Case 1, predicted resource exhaustion
+This is not an operator intent: do NOT call record_intent.
+Intent {intent_id} (SST={sst}) currently guarantees {guaranteed_mbps} Mbps. The NWDAF
+predicts {predicted_thp_mbps} Mbps of demand on this slice within {horizon_seconds} s
+(predicted load {predicted_load}).
+Scale the slice up for intent {intent_id}: call cn_nssmf_apply_qos AND
+ran_nssmf_apply_resources with intent_id={intent_id}, sst={sst},
+target_thp_mbps={new_target}. If the RAN can only meet part of it (degraded), keep the
+best-effort allocation — the operator is notified automatically. Then call
+update_intent_status for intent {intent_id} with the resulting status."""
+
+
+def _update_event(event_id, outcome: str, extra: dict) -> None:
+    if event_id is None:
+        return
+    conn = get_db_conn()
+    with conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE events SET handled_at = NOW(), outcome = %s, "
+            "payload = COALESCE(payload, '{}'::jsonb) || %s::jsonb WHERE id = %s",
+            (outcome, json.dumps(extra), event_id),
+        )
+
+
+def _notify_operator(ev: dict, new_target: float, trace: list[dict]) -> None:
+    """Graceful degradation, UC1: the expansion could only partly be met.
+    'Notify the operator' = an sla_violation_predicted event (queryable) plus a
+    WARNING line; redistribution across slices is not implemented."""
+    ran = [t["result"] for t in trace if t["tool"] == "ran_nssmf_apply_resources"]
+    payload = {"requested_mbps": new_target, "predicted_thp_mbps": ev.get("predicted_thp_mbps"),
+               "ran_result": (ran[-1].get("result") if ran else None), "from_event": ev.get("event_id")}
+    conn = get_db_conn()
+    with conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO events (source, type, intent_id, sst, payload) "
+            "VALUES ('orchestrator', 'sla_violation_predicted', %s, %s, %s)",
+            (ev["intent_id"], ev.get("sst"), json.dumps(payload)),
+        )
+    print(f"[orchestrator] WARNING operator: intent {ev['intent_id']} (SST={ev.get('sst')}) can only be "
+          f"partly scaled to {new_target} Mbps — predicted SLA violation recorded")
+
+
+def handle_event(ev: dict) -> dict:
+    """Let the LLM decide on a UC1 event, then settle the outcome from the
+    domains' structured statuses (not from the model's prose)."""
+    new_target = float(math.ceil(float(ev["predicted_thp_mbps"]) * (1 + UC1_HEADROOM)))
+    print(f"[orchestrator] event {ev.get('event_id')}: {ev['type']} intent={ev['intent_id']} "
+          f"-> scaling target to {new_target} Mbps")
+    message = timeutil.prompt_header() + "\n\n" + EVENT_TEMPLATE.format(**{
+        "predicted_load": None, "horizon_seconds": 60, **ev, "new_target": new_target})
+    result = react_loop(SYSTEM_PROMPT, message, get_tool_schemas(), dispatch_tool, tag="orchestrator-event")
+    trace = result["trace"]
+
+    intent_id = ev["intent_id"]
+    acted = any(t["tool"].startswith(("cn_nssmf_apply", "ran_nssmf_apply"))
+                and t["input"].get("intent_id") == intent_id for t in trace)
+    if not acted:
+        outcome = "no_action"   # the intent keeps whatever was in force
+    else:
+        outcome = _infer_status_for_intent(trace, intent_id)
+        dispatch_tool("update_intent_status", {"intent_id": intent_id, "status": outcome})
+        if outcome == "degraded":
+            _notify_operator(ev, new_target, trace)
+    _update_event(ev.get("event_id"), outcome, {"new_target_mbps": new_target, "final": result["final"]})
+    return {"outcome": outcome, "new_target_mbps": new_target, "trace": trace, "final": result["final"]}
+
+
+@app.post("/event")
+def event_endpoint():
+    ev = request.get_json(force=True) or {}
+    if ev.get("type") != "predicted_exhaustion":
+        return jsonify({"error": f"unsupported event type: {ev.get('type')!r}"}), 400
+    try:
+        ev["intent_id"] = int(ev["intent_id"])
+        float(ev["predicted_thp_mbps"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "event needs intent_id and predicted_thp_mbps"}), 400
+    # answer the monitor right away; the ReAct run takes tens of seconds
+    threading.Thread(target=handle_event, args=(ev,), name="uc1-event", daemon=True).start()
+    return jsonify({"accepted": True, "event_id": ev.get("event_id")}), 202
+
+
 @app.get("/health")
 def health():
     return jsonify({"status": "ok", "agent": "orchestrator"})
@@ -170,5 +280,6 @@ if __name__ == "__main__":
     else:
         # service mode
         scheduler.start()
+        sla_monitor.start()
         print(f"[orchestrator] listening on :{PORT}  model={MODEL} @ {OLLAMA_URL}")
         app.run(host="0.0.0.0", port=PORT)

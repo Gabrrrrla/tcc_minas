@@ -42,6 +42,7 @@ import torch.nn as nn
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
+from dataset import build_dataset
 from db import get_db_conn
 
 # ---------------------------------------------------------------------------
@@ -97,15 +98,8 @@ def _build_dataset(sst: int) -> tuple[list, list, int] | None:
     times  = [r[0] for r in rows]
     values = [float(r[1]) for r in rows]
 
-    # same steps_ahead calculation as nwdaf/main.py
-    deltas = [(times[i + 1] - times[i]).total_seconds() for i in range(len(times) - 1)]
-    avg_interval = (sum(deltas) / len(deltas)) if deltas else COLLECT_INTERVAL
-    steps_ahead = max(1, round(HORIZON_S / avg_interval)) if avg_interval > 0 else 1
-
-    X, y = [], []
-    for i in range(N_LAGS, len(values) - steps_ahead):
-        X.append(values[i - N_LAGS:i])
-        y.append(values[i + steps_ahead])
+    # identical (X, y) construction to the live NWDAF (agents/nwdaf/dataset.py)
+    X, y, steps_ahead, _ = build_dataset(times, values, HORIZON_S, N_LAGS, COLLECT_INTERVAL)
 
     if len(X) < MIN_ROWS:
         return None
@@ -137,6 +131,9 @@ class _LSTMModel(nn.Module):
 
 
 def _train_lstm(X_train: list, y_train: list) -> _LSTMModel:
+    # fixed seed like RF/GB's random_state=0: weight init + batch shuffling
+    # otherwise make every run's LSTM numbers different
+    torch.manual_seed(0)
     model = _LSTMModel(input_size=1, hidden_size=LSTM_HIDDEN)
     optimizer = torch.optim.Adam(model.parameters(), lr=LSTM_LR)
     loss_fn   = nn.MSELoss()
@@ -193,6 +190,24 @@ def _run_slice(sst: int) -> list[dict] | None:
     X_tr, y_tr, X_te, y_te = _chronological_split(X, y)
 
     results = []
+
+    # --- naive baselines: a learned model only "learns" something if it
+    # beats both. On a series with no structure (the i.i.d. `mock` source)
+    # every model ties with the mean; persistence wins whenever the series is
+    # strongly autocorrelated at this horizon.
+    train_mean = sum(y_tr) / len(y_tr)
+    for name, pred in (("baseline_persistence", [x[-1] for x in X_te]),
+                       ("baseline_train_mean", [train_mean] * len(X_te))):
+        results.append({
+            "sst": sst,
+            "model": name,
+            "mae":  round(mean_absolute_error(y_te, pred), 4),
+            "rmse": round(_rmse(y_te, pred), 4),
+            "inference_time_ms": 0.0,
+            "n_train": len(X_tr),
+            "n_test":  len(X_te),
+            "steps_ahead": steps_ahead,
+        })
 
     # --- RandomForest (same hyperparams as nwdaf/main.py) ---
     rf = RandomForestRegressor(n_estimators=100, max_depth=6, random_state=0)
@@ -280,10 +295,12 @@ def _print_table(all_results: list[dict]) -> None:
 def _write_jsonl(all_results: list[dict], out_dir: str) -> str:
     os.makedirs(out_dir, exist_ok=True)
     ts   = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = os.path.join(out_dir, f"rq4_{ts}.jsonl")
+    # the database name tells synthetic (minas_synth) from live telemetry
+    db   = os.getenv("POSTGRES_DB", "minas")
+    path = os.path.join(out_dir, f"rq4_{db}_{ts}.jsonl")
     with open(path, "w", encoding="utf-8") as f:
         for r in all_results:
-            f.write(json.dumps(r, default=str) + "\n")
+            f.write(json.dumps({**r, "database": db}, default=str) + "\n")
     return path
 
 

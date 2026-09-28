@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mcp.server.fastmcp import FastMCP
 
-from react import MODEL, OLLAMA_URL, react_loop
+from react import MODEL, OLLAMA_URL, react_loop, scoped_tools
 from tools import TOOL_SCHEMAS, dispatch_tool
 
 PORT = int(os.getenv("RAN_NSSMF_PORT", "8002"))
@@ -71,6 +71,28 @@ slice management.
 mcp = FastMCP("ran-nssmf", host="0.0.0.0", port=PORT)
 
 
+# Tools each directive may use (react.scoped_tools). check_sla is read-only
+# by contract; revert_resources is deterministic (no loop).
+DIRECTIVE_TOOLS = {
+    "apply_resources": {"get_ran_kpis", "get_slice_load", "estimate_capacity", "allocate_prb"},
+    "check_sla":       {"get_ran_kpis", "get_slice_load", "estimate_capacity"},
+}
+
+
+def _directive_status(action: str, trace: list[dict]) -> str:
+    """Structured outcome of a directive, read from what the tools actually
+    returned — not from the model's prose — so callers (the scheduler's
+    activation, the orchestrator's safety net) can rely on it.
+    apply_resources: the last allocate_prb result decides ('applied'/'degraded'); no
+    successful allocate_prb call at all means 'failed'. Other actions: 'ok'."""
+    if action != "apply_resources":
+        return "ok"
+    results = [t["result"] for t in trace if t["tool"] == "allocate_prb"]
+    if not results or "error" in results[-1]:
+        return "failed"
+    return results[-1].get("status", "applied")
+
+
 def _run_directive(action: str, intent_id: int, sst: int,
                    target_thp_mbps: float | None = None) -> dict:
     """Build a directive dict and drive the ReAct loop for it — the same
@@ -85,11 +107,13 @@ def _run_directive(action: str, intent_id: int, sst: int,
         f"{json.dumps(directive, indent=2)}\n\n"
         "Carry it out and report the SLA status."
     )
-    out = react_loop(SYSTEM_PROMPT, user_msg, TOOL_SCHEMAS, dispatch_tool, tag="ran-nssmf")
+    tools, dispatch = scoped_tools(TOOL_SCHEMAS, dispatch_tool, DIRECTIVE_TOOLS[action])
+    out = react_loop(SYSTEM_PROMPT, user_msg, tools, dispatch, tag="ran-nssmf")
     return {
         "agent": "ran-nssmf",
         "intent_id": intent_id,
         "action": action,
+        "status": _directive_status(action, out["trace"]),
         "result": out["final"],
         "trace": out["trace"],
     }
@@ -105,8 +129,14 @@ def apply_resources(intent_id: int, sst: int, target_thp_mbps: float | None = No
 
 @mcp.tool()
 def revert_resources(intent_id: int, sst: int) -> dict:
-    """Restore the PRB allocation that was in place before this intent."""
-    return _run_directive("revert_resources", intent_id, sst)
+    """Restore the PRB allocation that was in place before this intent.
+
+    Deterministic — no ReAct loop (same reason as cn-nssmf revert_qos: the
+    scheduler must see a structured 'reverted' / 'noop' status, not the
+    model's prose claim that it reverted)."""
+    print(f"[ran-nssmf] revert_resources (deterministic) intent={intent_id} sst={sst}")
+    return {"agent": "ran-nssmf", "intent_id": intent_id, "action": "revert_resources",
+            **dispatch_tool("revert_prb", {"intent_id": intent_id})}
 
 
 @mcp.tool()

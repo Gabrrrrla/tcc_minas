@@ -15,6 +15,14 @@ threads, so sharing one globally let the scheduler silently deadlock waiting
 on a connection the Flask thread was mid-query on — no exception, no log
 line, it just stopped reverting anything. Found + fixed 2026-09-12 while
 running the first live smoke test (see runbook / HANDOVER for the repro).
+
+autocommit=True: bare reads (`with conn.cursor()` without `with conn`) used
+to open a transaction that was never closed, leaving e.g. the scheduler's
+connection "idle in transaction" forever (blocks DDL; and after any failed
+read the connection stayed in the aborted state, so every later query on
+that thread failed). Writes are unaffected: since psycopg2 2.9, `with conn:`
+still opens a real transaction on an autocommit connection and commits /
+rolls back on exit.
 """
 
 import os
@@ -35,5 +43,6 @@ def get_db_conn():
             user=os.getenv("POSTGRES_USER", "minas"),
             password=os.getenv("POSTGRES_PASSWORD", "minas"),
         )
+        conn.autocommit = True
         _local.conn = conn
     return conn

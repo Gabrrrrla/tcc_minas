@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mcp.server.fastmcp import FastMCP
 
-from react import MODEL, OLLAMA_URL, react_loop
+from react import MODEL, OLLAMA_URL, react_loop, scoped_tools
 from tools import TOOL_SCHEMAS, dispatch_tool
 
 PORT = int(os.getenv("CN_NSSMF_PORT", "8001"))
@@ -58,7 +58,7 @@ management.
 
 ## Directive actions you may receive
 - apply_qos    — reconfigure QoS for a slice; in a predictive scenario (SST=2)
-                 call query_nwdaf first, then configure_qos, then record_policy
+                 call query_nwdaf first, then configure_qos
 - revert_qos   — restore the previous configuration for the intent
 - query_nwdaf  — return an analytics / prediction report only
 - check_sla    — read core KPIs for the slice and judge SLA compliance
@@ -66,7 +66,8 @@ management.
 ## Decision rules
 1. Convert a throughput target in Mbps into GBR (guaranteed); set MBR = GBR unless
    told otherwise. Use the default 5QI for the SST when none is given.
-2. After a successful configure_qos, always call record_policy.
+2. configure_qos records the policy itself; call record_policy only to correct
+   the recorded values.
 3. If the Core cannot satisfy the target, do not fail silently: end with status
    "degraded" and state the shortfall so the Orchestrator can decide.
 4. Finish with a concise SLA status line: applied / degraded / failed / reverted,
@@ -74,6 +75,29 @@ management.
 """
 
 mcp = FastMCP("cn-nssmf", host="0.0.0.0", port=PORT)
+
+
+# Tools each directive may use (react.scoped_tools). query_nwdaf and
+# check_sla are read-only by contract; revert_qos is deterministic (no loop).
+DIRECTIVE_TOOLS = {
+    "apply_qos":   {"query_nwdaf", "get_core_kpis", "configure_qos", "record_policy"},
+    "query_nwdaf": {"query_nwdaf"},
+    "check_sla":   {"get_core_kpis", "query_nwdaf"},
+}
+
+
+def _directive_status(action: str, trace: list[dict]) -> str:
+    """Structured outcome of a directive, read from what the tools actually
+    returned — not from the model's prose — so callers (the scheduler's
+    activation, the orchestrator's safety net) can rely on it.
+    apply_qos: the last configure_qos result decides ('applied'/'degraded'); no
+    successful configure_qos call at all means 'failed'. Other actions: 'ok'."""
+    if action != "apply_qos":
+        return "ok"
+    results = [t["result"] for t in trace if t["tool"] == "configure_qos"]
+    if not results or "error" in results[-1]:
+        return "failed"
+    return results[-1].get("status", "applied")
 
 
 def _run_directive(action: str, intent_id: int, sst: int,
@@ -93,11 +117,13 @@ def _run_directive(action: str, intent_id: int, sst: int,
         f"{json.dumps(directive, indent=2)}\n\n"
         "Carry it out and report the SLA status."
     )
-    out = react_loop(SYSTEM_PROMPT, user_msg, TOOL_SCHEMAS, dispatch_tool, tag="cn-nssmf")
+    tools, dispatch = scoped_tools(TOOL_SCHEMAS, dispatch_tool, DIRECTIVE_TOOLS[action])
+    out = react_loop(SYSTEM_PROMPT, user_msg, tools, dispatch, tag="cn-nssmf")
     return {
         "agent": "cn-nssmf",
         "intent_id": intent_id,
         "action": action,
+        "status": _directive_status(action, out["trace"]),
         "result": out["final"],
         "trace": out["trace"],
     }
@@ -115,8 +141,16 @@ def apply_qos(intent_id: int, sst: int, target_thp_mbps: float | None = None,
 @mcp.tool()
 def revert_qos(intent_id: int, sst: int) -> dict:
     """Restore the QoS configuration that was in place before this intent's
-    policy was applied. Called when a time window expires."""
-    return _run_directive("revert_qos", intent_id, sst)
+    policy was applied. Called when a time window expires.
+
+    Deterministic — no ReAct loop: undoing a recorded policy needs no
+    reasoning, and going through the LLM meant the scheduler could mark an
+    intent 'reverted' after the model merely *said* it reverted. The result
+    carries a structured status ('reverted' / 'noop' / error) the caller can
+    check."""
+    print(f"[cn-nssmf] revert_qos (deterministic) intent={intent_id} sst={sst}")
+    return {"agent": "cn-nssmf", "intent_id": intent_id, "action": "revert_qos",
+            **dispatch_tool("revert_qos", {"intent_id": intent_id})}
 
 
 @mcp.tool()
@@ -148,5 +182,7 @@ _register_health()
 
 
 if __name__ == "__main__":
+    import monitor  # UC1: periodic NWDAF check -> report to the orchestrator
+    monitor.start()
     print(f"[cn-nssmf] MCP server on :{PORT}/mcp   model={MODEL} @ {OLLAMA_URL}")
     mcp.run(transport="streamable-http")

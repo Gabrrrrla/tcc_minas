@@ -32,9 +32,20 @@ this from the host machine works out of the box (both are published), no
 override needed.
 
 Metrics computed per (intent, repeat) — see Section 5.4 for definitions:
-  task_success        bool   — reached 'applied' (valid intents), or
+  task_success        bool   — valid windowed intents (expected_outcome
+                                'scheduled'): recorded as 'scheduled', i.e.
+                                left for the scheduler instead of applied
+                                before the window opens. Other valid
+                                intents: final status matches what the
+                                RAN could actually deliver — 'applied' if the
+                                latest ran_allocations row supports the target,
+                                'degraded' if it doesn't (graceful degradation,
+                                UC1). A plain "reached 'applied'" rule would
+                                reward the model for claiming success on
+                                targets the cell cannot serve (e.g. 25 Mbps vs
+                                51 PRB x 0.4 = 20.4 Mbps). Invalid intents:
                                 correctly avoided 'applied'/'degraded' with
-                                the offending value in force (invalid ones)
+                                the offending value in force
   decision_latency_s  float  — DB-timestamp gap, intents.received_at to the
                                 latest policies/ran_allocations.applied_at
   extraction_correct  bool   — recorded sst/target_thp_mbps/window vs ground
@@ -154,7 +165,8 @@ def _fetch_intent_record(conn, intent_id: int) -> dict | None:
         policies = cur.fetchall()
 
         cur.execute(
-            "SELECT applied_at, reverted_at FROM ran_allocations WHERE intent_id = %s ORDER BY applied_at",
+            "SELECT applied_at, reverted_at, supported_thp_mbps FROM ran_allocations "
+            "WHERE intent_id = %s ORDER BY applied_at",
             (intent_id,),
         )
         ran_allocs = cur.fetchall()
@@ -173,6 +185,12 @@ def _fetch_intent_record(conn, intent_id: int) -> dict | None:
         else:
             reversion_status = "not_due"
 
+    # RAN is the capacity authority: feasible iff its latest allocation for
+    # this intent supports the recorded target. None = RAN never allocated.
+    ran_feasible = None
+    if ran_allocs and thp is not None:
+        ran_feasible = (ran_allocs[-1][2] or 0) >= thp - _THP_TOLERANCE_MBPS
+
     return {
         "intent_id": intent_id,
         "received_at": received_at,
@@ -185,7 +203,41 @@ def _fetch_intent_record(conn, intent_id: int) -> dict | None:
         "reversion_status": reversion_status,
         "n_policies": len(policies),
         "n_ran_allocations": len(ran_allocs),
+        "ran_feasible": ran_feasible,
     }
+
+
+def _expected_status(record: dict) -> str | None:
+    if record["ran_feasible"] is None:
+        return None
+    return "applied" if record["ran_feasible"] else "degraded"
+
+
+# ---------------------------------------------------------------------------
+# Isolation between runs
+# ---------------------------------------------------------------------------
+
+def release(conn, intent_ids: list[int] | None = None) -> None:
+    """Mark intents and their policies/RAN allocations as reverted, so the
+    next (intent, repeat) starts from the same baseline: no active policy
+    feeding CN-NSSMF's 'previous' config, no active allocation, and no recent
+    intent for orchestrator's semantic dedup (which skips reverted intents)
+    to reuse. Without this, repeats of the same intent reused one intent_id
+    and inherited its status and latency. intent_ids=None releases everything
+    still active (reset before a benchmark run)."""
+    where, args = ("", ()) if intent_ids is None else (" AND intent_id = ANY(%s)", (list(intent_ids),))
+    with conn, conn.cursor() as cur:
+        for table in ("policies", "ran_allocations"):
+            cur.execute(
+                f"UPDATE {table} SET status = 'reverted', reverted_at = COALESCE(reverted_at, NOW()) "
+                f"WHERE status = 'active'{where}",
+                args,
+            )
+        cur.execute(
+            "UPDATE intents SET status = 'reverted' WHERE status <> 'reverted'"
+            + ("" if intent_ids is None else " AND id = ANY(%s)"),
+            args,
+        )
 
 
 def _matches_expected_window(record: dict, expected: dict | None) -> bool:
@@ -215,8 +267,9 @@ def _matches_ground_truth(record: dict, intent: dict) -> bool:
 
 def _offending_value_applied(record: dict, intent: dict) -> bool:
     """For an invalid intent: did this DB row commit the exact bad value the
-    intent stated, and reach a status that means it's actually in force?"""
-    if record["status"] not in ("applied", "degraded"):
+    intent stated, and reach a status that means it's in force or will be
+    ('scheduled' goes into force by itself when its window opens)?"""
+    if record["status"] not in ("applied", "degraded", "scheduled"):
         return False
     if record["sst"] != intent["expected_sst"]:
         return False
@@ -259,7 +312,13 @@ def run_one(host: str, intent: dict, repeat: int, conn, timeout: float) -> dict:
     reversion_status = None
     if intent["validity"] == "valid":
         extraction_correct = any(_matches_ground_truth(r, intent) for r in db_records) if db_records else False
-        task_success = any(r["status"] == "applied" for r in db_records)
+        if intent["expected_outcome"] == "scheduled":
+            task_success = any(r["status"] == "scheduled" for r in db_records)
+        else:
+            task_success = any(
+                _expected_status(r) is not None and r["status"] == _expected_status(r)
+                for r in db_records
+            )
         due_statuses = [r["reversion_status"] for r in db_records if r["reversion_status"]]
         if due_statuses:
             reversion_status = "reverted" if "reverted" in due_statuses else (
@@ -268,6 +327,9 @@ def run_one(host: str, intent: dict, repeat: int, conn, timeout: float) -> dict:
     else:
         bad_applied = any(_offending_value_applied(r, intent) for r in db_records)
         task_success = not bad_applied
+
+    if intent_ids:
+        release(conn, intent_ids)
 
     return {
         "id": intent["id"],
@@ -358,6 +420,7 @@ def main() -> None:
         os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
 
     conn = get_db_conn()
+    release(conn)
     records: list[dict] = []
     total = len(intents) * args.repeats
     done = 0

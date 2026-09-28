@@ -14,3 +14,8 @@ scrape_configs:
   - job_name: "upf"
     static_configs:
       - targets: ["upf:9090"]
+
+  # per-slice TUN counters (ogstun / ogstun2) from the UPF's network namespace
+  - job_name: "upf-netdev"
+    static_configs:
+      - targets: ["upf:9100"]

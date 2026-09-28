@@ -17,6 +17,8 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+import timeutil
+
 # RQ3 ablation switch (see TCC-II-DRAFT.tex Section 5, "guardrails on/off"):
 # when disabled, validate() is still run so violations are visible in the
 # logs, but the error is not returned to the model, so the call proceeds as
@@ -29,6 +31,13 @@ _VALID_SST = {1, 2}
 
 # Valid 5QI range — standardised values (TS 23.501 Table 5.7.4-1)
 _5QI_MIN, _5QI_MAX = 1, 86
+
+# Upper bound for any bit rate a tool may request (Mbps). Default = the
+# Session-AMBR the subscribers are provisioned with (scripts/provision.js:
+# 1 Gbps) — nothing above it can be enforced for a session anyway, and once
+# configure_qos/allocate_prb push to real NFs a hallucinated "10000 Mbps" must
+# not reach the PCF/gNB.
+_MAX_RATE_MBPS = float(os.getenv("GUARDRAIL_MAX_RATE_MBPS", "1000"))
 
 # Valid intent lifecycle statuses (must match schema.sql CHECK constraint)
 _VALID_INTENT_STATUS = {
@@ -60,6 +69,15 @@ def _positive_float(value: Any, field: str) -> dict | None:
     return None
 
 
+def _rate_mbps(value: Any, field: str) -> dict | None:
+    """A bit rate in Mbps: positive and within _MAX_RATE_MBPS."""
+    if (e := _positive_float(value, field)):
+        return e
+    if float(value) > _MAX_RATE_MBPS:
+        return _err(f"{field} must be <= {_MAX_RATE_MBPS:g} Mbps (Session-AMBR), got {float(value):g}")
+    return None
+
+
 def _valid_sst(value: Any) -> dict | None:
     try:
         v = int(value)
@@ -74,10 +92,8 @@ def _parse_iso(value: str, field: str) -> tuple[datetime | None, dict | None]:
     if not isinstance(value, str):
         return None, _err(f"{field} must be an ISO-8601 string, got {value!r}")
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt, None
+        # no offset -> operator-local time (MINAS_TZ), not UTC
+        return timeutil.parse_iso(value), None
     except ValueError:
         return None, _err(f"{field} is not a valid ISO-8601 timestamp: {value!r}")
 
@@ -92,7 +108,7 @@ def _validate_record_intent(p: dict) -> dict | None:
 
     thp = p.get("target_thp_mbps")
     if thp is not None:
-        if (e := _positive_float(thp, "target_thp_mbps")):
+        if (e := _rate_mbps(thp, "target_thp_mbps")):
             return e
 
     ws = p.get("window_start")
@@ -112,6 +128,8 @@ def _validate_record_intent(p: dict) -> dict | None:
             return _err(
                 f"window_end ({we}) must be after window_start ({ws})"
             )
+        if dt_end <= datetime.now(timezone.utc):
+            return _err(f"window_end ({we}) is already in the past")
 
     return None
 
@@ -132,19 +150,19 @@ def _validate_configure_qos(p: dict) -> dict | None:
         return e
     if (e := _valid_sst(p.get("sst"))):
         return e
-    if (e := _positive_float(p.get("gbr_dl_mbps"), "gbr_dl_mbps")):
+    if (e := _rate_mbps(p.get("gbr_dl_mbps"), "gbr_dl_mbps")):
         return e
 
     gbr_dl = float(p["gbr_dl_mbps"])
 
     gbr_ul = p.get("gbr_ul_mbps")
     if gbr_ul is not None:
-        if (e := _positive_float(gbr_ul, "gbr_ul_mbps")):
+        if (e := _rate_mbps(gbr_ul, "gbr_ul_mbps")):
             return e
 
     mbr_dl = p.get("mbr_dl_mbps")
     if mbr_dl is not None:
-        if (e := _positive_float(mbr_dl, "mbr_dl_mbps")):
+        if (e := _rate_mbps(mbr_dl, "mbr_dl_mbps")):
             return e
         if float(mbr_dl) < gbr_dl:
             return _err(
@@ -153,7 +171,7 @@ def _validate_configure_qos(p: dict) -> dict | None:
 
     mbr_ul = p.get("mbr_ul_mbps")
     if mbr_ul is not None:
-        if (e := _positive_float(mbr_ul, "mbr_ul_mbps")):
+        if (e := _rate_mbps(mbr_ul, "mbr_ul_mbps")):
             return e
         if gbr_ul is not None and float(mbr_ul) < float(gbr_ul):
             return _err(
@@ -183,7 +201,7 @@ def _validate_allocate_prb(p: dict) -> dict | None:
         return e
     if (e := _valid_sst(p.get("sst"))):
         return e
-    if (e := _positive_float(p.get("target_thp_mbps"), "target_thp_mbps")):
+    if (e := _rate_mbps(p.get("target_thp_mbps"), "target_thp_mbps")):
         return e
     return None
 
@@ -191,7 +209,7 @@ def _validate_allocate_prb(p: dict) -> dict | None:
 def _validate_estimate_capacity(p: dict) -> dict | None:
     if (e := _valid_sst(p.get("sst"))):
         return e
-    if (e := _positive_float(p.get("target_thp_mbps"), "target_thp_mbps")):
+    if (e := _rate_mbps(p.get("target_thp_mbps"), "target_thp_mbps")):
         return e
     return None
 
@@ -215,7 +233,7 @@ def _validate_record_policy(p: dict) -> dict | None:
         return e
     if (e := _valid_sst(p.get("sst"))):
         return e
-    if (e := _positive_float(p.get("enforced_thp_mbps"), "enforced_thp_mbps")):
+    if (e := _rate_mbps(p.get("enforced_thp_mbps"), "enforced_thp_mbps")):
         return e
     return None
 

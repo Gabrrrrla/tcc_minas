@@ -9,6 +9,9 @@
 --   intents        — Operator intents received by orchestrator
 --   negotiations   — CN-NSSMF <-> RAN-NSSMF negotiation rounds per intent
 --   policies       — Applied policies and their lifecycle
+--   ran_allocations — PRB reservations per intent (RAN-NSSMF)
+--   events         — UC1 predicted exhaustion / SLA violations (migrations/002)
+--   sla_samples    — SLA monitor samples per active intent (migrations/002)
 
 
 -- -------------------------------------------------------------------------
@@ -104,8 +107,10 @@ CREATE TABLE intents (
     window_start    TIMESTAMPTZ,            -- requested enforcement window
     window_end      TIMESTAMPTZ,
 
+    -- 'scheduled': window_start is in the future; the orchestrator's
+    -- scheduler applies it when the window opens (migrations/001_*.sql)
     status          TEXT NOT NULL DEFAULT 'received'
-                    CHECK (status IN ('received','decomposed','negotiating',
+                    CHECK (status IN ('received','scheduled','decomposed','negotiating',
                                       'applied','degraded','failed','reverted'))
 );
 
@@ -185,3 +190,32 @@ CREATE TABLE ran_allocations (
 
 CREATE INDEX idx_ran_alloc_intent ON ran_allocations (intent_id);
 CREATE INDEX idx_ran_alloc_status ON ran_allocations (sst, status);
+
+
+-- -------------------------------------------------------------------------
+-- Events + SLA samples (same DDL as migrations/002_events_sla_samples.sql)
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS events (
+    id          SERIAL PRIMARY KEY,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source      TEXT NOT NULL,
+    type        TEXT NOT NULL,
+    intent_id   INTEGER REFERENCES intents(id),
+    sst         INTEGER,
+    payload     JSONB,
+    handled_at  TIMESTAMPTZ,
+    outcome     TEXT            -- applied / degraded / failed / no_action / undelivered
+);
+CREATE INDEX IF NOT EXISTS idx_events_intent_type ON events (intent_id, type, created_at DESC);
+
+-- One row per SLA-monitor tick per active intent.
+CREATE TABLE IF NOT EXISTS sla_samples (
+    id                SERIAL PRIMARY KEY,
+    sampled_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    intent_id         INTEGER NOT NULL REFERENCES intents(id),
+    sst               INTEGER NOT NULL,
+    target_thp_mbps   REAL NOT NULL,
+    observed_thp_mbps REAL NOT NULL,
+    compliant         BOOLEAN NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sla_samples_intent ON sla_samples (intent_id, sampled_at);

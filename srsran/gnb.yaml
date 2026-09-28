@@ -9,9 +9,17 @@
 # gnb_id: 1
 # ran_node_name: minas-gnb
 #
+# # N2/N3 direto pela bridge do Docker (docker-compose.lab.yml), sem NAT:
+# #   o host alcança a rede minas-net (10.11.0.0/24) e 10.11.0.1 é o gateway
+# #   da bridge no host. O UPF anuncia GTP-U em 10.11.0.22 (open5gs/upf.lab.yaml).
+# #   (127.0.0.1 via porta publicada também sobe o NGAP, mas SCTP atrás do NAT
+# #   do Docker e o GTP-U anunciado em loopback são frágeis.)
+# #   Antes: sudo modprobe sctp   (scripts/lab_preflight.sh confere)
+# #   Chaves exatas dependem da versão do srsRAN Project — conferir com o
+# #   gnb.yaml que o Miguel já usa com a Liteon.
 # amf:
-#   addr: 127.0.0.1       # AMF roda no mesmo servidor via Docker (porta 38412 publicada no host)
-#   bind_addr: GNB_BIND_ADDR
+#   addr: 10.11.0.20      # AMF (container) na minas-net
+#   bind_addr: 10.11.0.1  # gateway da bridge minas-net no host
 #
 # ru_ofh:
 #   t1a_max_cp_dl: 500
@@ -42,9 +50,20 @@
 #   nof_antennas_ul: 1
 #   nof_antennas_dl: 1
 #
+# # PLMN/TAC/S-NSSAI têm que bater com open5gs/amf.yaml, com o IMSI dos SIMs e
+# # com scripts/provision.js (00101, TAC 1, SST 1 e 2 sem SD).
+# # Divisão de PRB por slice: versões recentes do srsRAN Project aceitam
+# # sched_cfg por slice (estático — mudar exige reiniciar o gNB). É o ponto
+# # onde um enforcement real do allocate_prb (RAN-NSSMF) atuaria.
 # slicing:
 #   - sst: 1
+#     # sched_cfg:
+#     #   min_prb_policy_ratio: 0
+#     #   max_prb_policy_ratio: 100
 #   - sst: 2
+#     # sched_cfg:
+#     #   min_prb_policy_ratio: 20   # reserva p/ URLLC (UC1)
+#     #   max_prb_policy_ratio: 100
 #
 # log:
 #   filename: /tmp/gnb.log

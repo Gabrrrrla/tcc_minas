@@ -50,7 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db import get_db_conn  # noqa: E402
 from intent_set import INTENTS  # noqa: E402
-from run_benchmark import print_summary, run_one  # noqa: E402
+from run_benchmark import print_summary, release, run_one  # noqa: E402
 
 _AGENT_SERVICES = ["orchestrator", "cn-nssmf", "ran-nssmf"]
 _HEALTH_PORTS   = {"orchestrator": 8000, "cn-nssmf": 8001, "ran-nssmf": 8002}
@@ -67,9 +67,13 @@ def _recreate_agents(model: str, rag: str, guardrails: str) -> None:
         "MINAS_MODEL": model,
         "RAG_ENABLED": rag,
         "GUARDRAILS_ENABLED": guardrails,
+        # background monitors off: a UC1 event or SLA-violation handling
+        # would add LLM calls in the middle of the measured intents
+        "UC1_ENABLED": "false",
+        "SLA_MONITOR_ENABLED": "false",
     }
     cmd = [
-        "docker", "compose", "up", "-d", "--force-recreate",
+        "docker", "compose", "up", "-d", "--force-recreate", "--no-deps",
         *_AGENT_SERVICES,
     ]
     print(f"[llm-bench] recreating containers: MINAS_MODEL={model} "
@@ -130,6 +134,7 @@ def _run_model(
         intents = [i for i in INTENTS if i["id"] in set(intent_ids)]
 
     conn    = get_db_conn()
+    release(conn)
     records: list[dict] = []
     total   = len(intents) * repeats
     done    = 0

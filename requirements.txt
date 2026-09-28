@@ -20,3 +20,7 @@ mcp>=1.9,<2
 # confirmed working against BAAI/bge-small-en-v1.5 here.
 sentence-transformers==5.2.0
 torch>=2.2
+
+# zoneinfo data for MINAS_TZ (agents/timeutil.py) - python:3.11-slim ships no
+# system tz database
+tzdata

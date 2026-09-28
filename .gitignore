@@ -27,3 +27,6 @@ agents/benchmark/results/
 
 # Docs
 *.pdf
+# Pastas do texto do TCC I e II (locais, não versionadas)
+tcc1/
+tcc2/

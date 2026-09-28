@@ -9,7 +9,12 @@ react_loop  — reason/act cycle: call the model, run any tool calls it emits,
 Environment: OLLAMA_URL (default http://localhost:11434),
              MINAS_MODEL (default qwen2.5:7b — see env.example for why this
              is the default instead of the telecom-tuned OTel-LLM-E4B-IT),
-             REACT_MAX_STEPS (default 16).
+             REACT_MAX_STEPS (default 16),
+             MINAS_TEMPERATURE / MINAS_SEED (optional; unset = Ollama's
+             defaults, i.e. sampled output that varies between runs — set
+             e.g. MINAS_TEMPERATURE=0 MINAS_SEED=42 for reproducible runs),
+             MINAS_NUM_CTX (default 8192) / MINAS_NUM_PREDICT (default 1024),
+             OLLAMA_TIMEOUT_SECONDS (default 180).
 """
 
 from __future__ import annotations
@@ -27,15 +32,52 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 MODEL      = os.getenv("MINAS_MODEL", "qwen2.5:7b")
 MAX_STEPS  = int(os.getenv("REACT_MAX_STEPS", "16"))
 
+TIMEOUT_S  = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
+
+# Context window and generation cap, ALWAYS sent. Ollama's default context is
+# 4096 tokens and nothing capped generation: on the 2026-09-28 benchmark ~3%
+# of chat calls (70/2491) overflowed it — Ollama then silently discards the
+# OLDEST half of the context, which can be the system prompt and tool
+# definitions — and a response stuck repeating itself ran until the 120 s
+# timeout (the HTTP 500s). Runs before this change used 4096 / unlimited.
+_OPTIONS: dict = {
+    "num_ctx": int(os.getenv("MINAS_NUM_CTX", "8192")),
+    "num_predict": int(os.getenv("MINAS_NUM_PREDICT", "1024")),
+}
+# Only sent when set (unset = Ollama's sampling defaults).
+if os.getenv("MINAS_TEMPERATURE"):
+    _OPTIONS["temperature"] = float(os.environ["MINAS_TEMPERATURE"])
+if os.getenv("MINAS_SEED"):
+    _OPTIONS["seed"] = int(os.environ["MINAS_SEED"])
+
 
 def call_ollama(messages: list[dict], tools: list[dict]) -> dict:
-    resp = requests.post(
-        f"{OLLAMA_URL}/api/chat",
-        json={"model": MODEL, "messages": messages, "tools": tools, "stream": False},
-        timeout=120,
-    )
+    body = {"model": MODEL, "messages": messages, "tools": tools, "stream": False}
+    body["options"] = _OPTIONS
+    resp = requests.post(f"{OLLAMA_URL}/api/chat", json=body, timeout=TIMEOUT_S)
     resp.raise_for_status()
     return resp.json()
+
+
+def scoped_tools(
+    tools: list[dict],
+    dispatch: Callable[[str, dict], dict],
+    allowed: set[str],
+) -> tuple[list[dict], Callable[[str, dict], dict]]:
+    """Least privilege per directive: only `allowed` tools are offered to the
+    model, and a call to anything else is refused deterministically (the
+    model can still emit a name it saw elsewhere). Seen live 2026-09-28: a
+    read-only query_nwdaf directive made CN-NSSMF call configure_qos on its
+    own, with a GBR nobody asked for."""
+    offered = [t for t in tools if t["function"]["name"] in allowed]
+
+    def guarded(name: str, params: dict) -> dict:
+        if name not in allowed:
+            return {"error": f"tool '{name}' is not available for this directive "
+                             f"(allowed: {sorted(allowed)})", "scope": True}
+        return dispatch(name, params)
+
+    return offered, guarded
 
 
 def react_loop(

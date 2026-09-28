@@ -62,15 +62,17 @@ Orquestrador interpreta intenção com janela temporal, decompõe em duas direti
 ## Estrutura do repositório
 
 ```
-tcc_II/
+tcc_minas/
 ├── docker-compose.yml          # Stack completa (Open5GS + monitoramento + banco)
+├── docker-compose.lab.yml      # Overlay do lab: GTP-U pela bridge, NAT das UEs, iperf, collector real
 ├── requirements.txt            # Dependências Python dos agentes
-├── .env.example                # Variáveis de ambiente necessárias
+├── env.example                 # Variáveis de ambiente (copiar para .env)
 │
 ├── open5gs/                    # Configurações do 5G Core
 │   ├── amf.yaml                # SST=1 + SST=2, TAC=1, PLMN 00101
 │   ├── smf.yaml                # DNN internet (10.45.0.0/16) + slice2 (10.46.0.0/16)
 │   ├── upf.yaml                # ogstun + ogstun2, advertise 127.0.0.1
+│   ├── upf.lab.yaml            # igual, advertise 10.11.0.22 (gNB no host, via bridge)
 │   ├── nrf.yaml
 │   ├── scp.yaml
 │   ├── ausf.yaml
@@ -84,43 +86,53 @@ tcc_II/
 │   └── gnb.yaml                # Configuração do gNB (preencher placeholders antes do lab)
 │
 ├── agents/
-│   ├── schema.sql              # Schema PostgreSQL (7 tabelas: KPIs, intents, negotiations, policies, ran_allocations)
+│   ├── schema.sql              # Schema PostgreSQL (KPIs, intents, policies, ran_allocations, events, sla_samples)
+│   ├── migrations/             # ALTERs p/ bancos já criados (schema.sql só roda num volume novo)
 │   ├── Dockerfile              # imagem única dos agentes (build context = raiz)
-│   ├── db.py                   # conexão PostgreSQL - compartilhada (thread-safe)
+│   ├── db.py                   # conexão PostgreSQL - compartilhada (thread-safe, autocommit)
+│   ├── timeutil.py             # fuso do operador (MINAS_TZ): "agora" no prompt, horário sem fuso = local
 │   ├── react.py                # cliente Ollama + loop ReAct - compartilhado
 │   ├── guardrails.py           # validação determinística de parâmetros (pré-dispatch, todos os agentes)
 │   ├── mcp_common.py           # helpers de cliente MCP (list_remote_tools / call_remote_tool)
 │   ├── orchestrator/
-│   │   ├── main.py             # HTTP (POST /intent) + CLI + RAG + system prompt 3GPP; cliente MCP
-│   │   ├── tools.py            # 3 ferramentas locais + descoberta MCP + dedup semântica de intents
-│   │   └── scheduler.py        # thread de reversão por janela temporal (UC2); revert via MCP
+│   │   ├── main.py             # HTTP (POST /intent, POST /event) + CLI + RAG + system prompt 3GPP; cliente MCP
+│   │   ├── tools.py            # 3 ferramentas locais + descoberta MCP + dedup semântica + agendamento
+│   │   ├── scheduler.py        # janelas (UC2): ativa no window_start, reverte no window_end; via MCP
+│   │   └── sla_monitor.py      # amostra o SLA dos intents em vigor -> sla_samples / eventos de violação
 │   ├── cn-nssmf/
 │   │   ├── main.py             # FastMCP servidor :8001/mcp; ferramentas apply_qos/revert_qos/query_nwdaf/check_sla
 │   │   ├── tools.py            # 5 ferramentas internas (ReAct) + dispatcher
+│   │   ├── monitor.py          # UC1 proativo: consulta a NWDAF e avisa o orquestrador (POST /event)
 │   │   └── nwdaf_client.py     # cliente da NWDAF (TS 23.288); cai pra mock se ela estiver fora
 │   ├── ran-nssmf/
 │   │   ├── main.py             # FastMCP servidor :8002/mcp; ferramentas apply_resources/revert_resources/check_sla
 │   │   └── tools.py            # 5 ferramentas internas (ReAct) + dispatcher
 │   ├── nwdaf/
 │   │   ├── main.py             # Flask POST /analytics; Random Forest real p/ SLICE_LOAD_LEVEL
-│   │   └── benchmark_rq4.py    # RF vs GBM vs LSTM offline sobre core_kpis (RQ4 do TCC II)
+│   │   ├── dataset.py          # janelas de lag compartilhadas (serviço e RQ4)
+│   │   └── benchmark_rq4.py    # RF vs GBM vs LSTM (+ baselines) offline sobre core_kpis (RQ4)
 │   ├── rag/
 │   │   ├── corpus.py           # 35 chunks curados (TS 23.501/23.288/28.312/38.300/28.552 + ReAct/MCP)
 │   │   └── retriever.py        # embeddings bge-small-en-v1.5; recover por cosseno
 │   ├── benchmark/
 │   │   ├── intent_set.py       # 16 intents com gabarito (ground truth para RQ1-RQ3)
 │   │   ├── run_benchmark.py    # runner de uma célula do fatorial; output JSONL
-│   │   └── run_llm_benchmark.py # itera sobre modelos, recria containers, agrega resultados
-│   └── collector/              # amostrador core_kpis + ran_kpis (fonte: prometheus | o1 | mock)
+│   │   ├── run_llm_benchmark.py # itera sobre modelos, recria containers, agrega resultados
+│   │   ├── run_window_probes.py # ciclo de vida das janelas ponta a ponta (agenda -> ativa -> reverte)
+│   │   └── sla_report.py       # taxa de cumprimento de SLA a partir de sla_samples
+│   └── collector/              # amostrador core_kpis + ran_kpis (fonte: prometheus | synthetic | o1 | mock)
 │       ├── main.py             # loop de coleta -> INSERT core_kpis / ran_kpis
+│       ├── synth.py            # tráfego sintético com estrutura temporal (diário + AR(1) + picos)
+│       ├── backfill_synthetic.py # gera dias de histórico sintético num banco dedicado
 │       └── o1_client.py        # stub da interface O1/NETCONF do gNB (fonte ideal p/ RAN)
 │
 ├── scripts/
 │   ├── provision.js            # Cadastra UE1 (SST=1+2) e UE2 (SST=2) no MongoDB
-│   └── inspect.js              # Consulta subscriber no MongoDB
+│   ├── inspect.js              # Consulta subscriber no MongoDB
+│   └── lab_preflight.sh        # checagens no servidor do lab (SCTP, portas, sub-redes, Ollama, CPU, relógio)
 │
 └── monitoring/
-    ├── prometheus.yml          # Scrape: AMF, SMF, UPF (:9090)
+    ├── prometheus.yml          # Scrape: AMF, SMF, UPF (:9090) + upf-netdev (:9100, TUN por slice)
     └── grafana/provisioning/
         └── datasources/
             └── prometheus.yml
@@ -144,6 +156,7 @@ tcc_II/
 | amf | gradiant/open5gs:2.6.4 | 10.11.0.20 | **38412/sctp** |
 | smf | gradiant/open5gs:2.6.4 | 10.11.0.21 | - |
 | upf | gradiant/open5gs:2.6.4 | 10.11.0.22 | **2152/udp** |
+| upf-netdev | prom/node-exporter:v1.8.2 | (rede do upf) | - |
 | webui | gradiant/open5gs-webui:2.6.4 | 10.11.0.30 | 3000 |
 | postgres | postgres:16-alpine | 10.11.0.40 | 5432 |
 | orchestrator | build `agents/Dockerfile` | 10.11.0.55 | 8000 |
@@ -166,8 +179,8 @@ tcc_II/
 
 ```bash
 git clone <url-do-repo>
-cd tcc_II
-cp .env.example .env
+cd tcc_minas
+cp env.example .env
 # editar .env se necessário (OLLAMA_URL, MINAS_MODEL)
 ```
 
@@ -190,7 +203,7 @@ docker compose logs provision     # deve mostrar: Subscriber ...001 provisioned
 
 | Interface | URL | Credenciais |
 |---|---|---|
-| Open5GS WebUI | http://localhost:3000 | admin / 1432 |
+| Open5GS WebUI | http://localhost:3000 | admin / 1423 |
 | Grafana | http://localhost:3001 | admin / minas |
 | Prometheus | http://localhost:9090 | - |
 
@@ -198,13 +211,35 @@ docker compose logs provision     # deve mostrar: Subscriber ...001 provisioned
 
 ## Integração com srsRAN (lab UNISINOS)
 
-O srsRAN roda **fora do Docker**, no mesmo servidor físico. O gNB aponta para o AMF em:
+O srsRAN roda **fora do Docker** (DPDK), no mesmo servidor físico, e fala com o
+core direto pela bridge `minas-net`, sem NAT:
 
 ```
-amf:
-  addr: 127.0.0.1
-  port: 38412
+gNB (host) ──N2/SCTP──> AMF 10.11.0.20:38412      (bind do gNB: 10.11.0.1, gateway da bridge)
+gNB (host) <─N3/GTP-U─> UPF 10.11.0.22:2152       (open5gs/upf.lab.yaml anuncia esse IP)
 ```
+
+Passo a passo no servidor do lab:
+
+1. `bash scripts/lab_preflight.sh` — só lê o host: módulo SCTP, portas 38412/2152
+   livres, Open5GS nativo rodando, sub-redes 10.11/10.45/10.46 em conflito,
+   Ollama alcançável e escutando fora do loopback, isolamento de CPU do gNB,
+   hugepages, relógio/NTP.
+2. Preencher `srsran/gnb.yaml` (ou partir do gnb.yaml do Miguel): `amf.addr`
+   10.11.0.20, `bind_addr` 10.11.0.1, parâmetros da RU; PLMN/TAC/S-NSSAI iguais
+   a `open5gs/amf.yaml` e aos SIMs.
+3. IMSI/K/OPc reais dos SIMs em `scripts/provision.js`.
+4. `docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d` —
+   o overlay troca a config da UPF, adiciona NAT das UEs, um servidor `iperf3`
+   (10.11.0.70) e põe o collector em modo `prometheus`.
+5. Subir o gNB → conferir NG Setup no log do AMF → ligar a UE → sessões PDU nas
+   duas slices → `iperf3 -c 10.11.0.70 -R` da UE → throughput por slice no
+   Prometheus (`node_network_transmit_bytes_total{device="ogstun"}`).
+6. Só então os agentes/intents. O LLM de preferência fora do servidor do gNB
+   (`OLLAMA_URL`): inferência em CPU compete com as threads de tempo real.
+
+Ainda **não** existe enforcement real no gNB/PCF/SMF (`allocate_prb`/`configure_qos`
+só registram) nem fonte de KPIs de rádio do srsRAN (`RAN_SOURCE=srsran`).
 
 ---
 
@@ -321,16 +356,48 @@ primeira execução e apresentadas ao LLM com prefixo de agente (para os dois
 | `cn_nssmf_apply_qos` / `cn_nssmf_revert_qos` / `cn_nssmf_query_nwdaf` / `cn_nssmf_check_sla` | `http://cn-nssmf:8001` | `apply_qos` / … |
 | `ran_nssmf_apply_resources` / `ran_nssmf_revert_resources` / `ran_nssmf_check_sla` | `http://ran-nssmf:8002` | `apply_resources` / … |
 
-**Reversão por janela temporal (UC2):** o serviço sobe uma thread
-(`scheduler.py`) que a cada `SCHEDULER_INTERVAL_SECONDS` (default 15s)
-verifica `intents` com `window_end` vencido e status `applied`/`degraded`, e
-chama as ferramentas MCP `revert_qos`/`revert_resources` nos servidores
-CN-NSSMF/RAN-NSSMF. Não passa pelo LLM, pois é um gatilho determinístico
-por tempo. Só marca a intent como `reverted` quando os dois agentes
-confirmam; senão tenta de novo na próxima varredura. Não roda no modo CLI
-(processo de execução única).
+**Data, hora e fuso:** toda intenção chega ao LLM precedida da data/hora atual
+em `MINAS_TZ` (default `America/Sao_Paulo`, `agents/timeutil.py`), e horário
+sem fuso é lido como local — "das 18h às 22h" vira 21:00–01:00 UTC no banco.
+
+**Janelas (UC2), `scheduler.py`:** thread que a cada `SCHEDULER_INTERVAL_SECONDS`
+(default 15s) faz duas coisas:
+- *Ativação* — intenção cuja janela começa no futuro (mais de
+  `ACTIVATION_GRACE_SECONDS`, default 60s) é gravada como `scheduled` e nada
+  toca o core/RAN; o orquestrador bloqueia `cn_nssmf_apply_*`/`ran_nssmf_apply_*`
+  para ela de forma determinística. No `window_start`, o scheduler manda as duas
+  diretivas via MCP e marca `applied`/`degraded`/`failed` pelo status
+  estruturado dos domínios; se um lado falha, desfaz o outro; janela que passou
+  inteira sem ativar vira `failed`.
+- *Reversão* — no `window_end`, chama `revert_qos`/`revert_resources`, que
+  executam direto no banco, sem LLM. Só marca `reverted` quando os dois devolvem
+  `reverted` (ou `noop`); senão tenta de novo.
+
+**UC1, eventos (`POST /event`):** o monitor do CN-NSSMF avisa quando a NWDAF
+prevê demanda acima da garantia. O endpoint responde 202 e, em segundo plano,
+o LLM recebe um `## Event` para ampliar a slice até previsão × (1 +
+`UC1_HEADROOM`); o resultado vem do status estruturado dos domínios. Se a RAN
+só atende parte (`degraded`), é a degradação graciosa: evento
+`sla_violation_predicted` na tabela `events` + WARNING no log (redistribuição
+entre slices não implementada).
+
+**Monitor de SLA (`sla_monitor.py`):** a cada `SLA_SAMPLE_SECONDS` (30s),
+para cada intenção em vigor, grava em `sla_samples` o throughput observado da
+slice vs. a garantia atual (só com telemetria fresca); após
+`SLA_VIOLATION_STREAK` (3) amostras seguidas abaixo, evento `sla_violation`.
+
+Nenhuma dessas threads roda no modo CLI (processo de execução única).
 
 ### CN-NSSMF (`agents/cn-nssmf/`) - esqueleto
+
+**Monitor proativo do UC1 (`monitor.py`):** a cada `UC1_POLL_SECONDS` (30s)
+consulta a NWDAF (`SLICE_LOAD_LEVEL`) para a intenção mais recente, em vigor e
+sem janela, de cada slice em `UC1_SLICES` (default `2`). Se a demanda prevista
+passar da garantia (GBR da política ativa) + `UC1_MARGIN` (10%), grava um evento
+`predicted_exhaustion` e avisa o orquestrador (`POST /event`) — quem decide é o
+orquestrador. Previsão mock/dado velho nunca dispara; no máximo um evento por
+intenção a cada `UC1_COOLDOWN_SECONDS` (300s). `UC1_ENABLED=false` desliga
+(recomendado durante benchmarks de LLM).
 
 Agente de domínio do núcleo 5G. Sobe como **servidor MCP** (streamable HTTP,
 endpoint `:8001/mcp`) e expõe as ações de diretiva como ferramentas MCP
@@ -360,10 +427,10 @@ PY
 | Ferramenta | Descrição | Estado |
 |---|---|---|
 | `query_nwdaf` | Analytics/predição da NWDAF via `Nnwdaf_AnalyticsInfo` (TS 23.288) | real p/ `SLICE_LOAD_LEVEL`; cai pra mock se a NWDAF estiver fora ou p/ os outros `analytics_id` |
-| `configure_qos` | Aplica GBR/MBR/5QI da slice no PCF (PCC rule) + SMF (sessão) | stub (`# TODO` PCF/SMF) |
-| `revert_qos` | Restaura a configuração anterior de uma intent | real (tabela `policies`) |
+| `configure_qos` | Aplica GBR/MBR/5QI da slice no PCF (PCC rule) + SMF (sessão) | stub (`# TODO` PCF/SMF); já grava a política em `policies` (o revert depende disso) |
+| `revert_qos` | Restaura a configuração anterior de uma intent | real (tabela `policies`); determinístico quando chamado via MCP |
 | `get_core_kpis` | Lê a telemetria de núcleo mais recente da slice | real (tabela `core_kpis`) |
-| `record_policy` | Persiste a política aplicada | real (tabela `policies`) |
+| `record_policy` | Corrige os valores da política da intent (upsert, não duplica) | real (tabela `policies`) |
 
 ### RAN-NSSMF (`agents/ran-nssmf/`) - esqueleto
 
@@ -384,9 +451,9 @@ curl localhost:8002/health
 |---|---|---|
 | `get_ran_kpis` | Agrega os últimos ~30 s de `ran_kpis` da slice | real (tabela `ran_kpis`) |
 | `get_slice_load` | Índice de carga da slice; computa e persiste se estiver defasado | real (tabela `slice_load`) |
-| `estimate_capacity` | PRBs necessários p/ um alvo de throughput e se cabem no orçamento | modelo estático (`# TODO` link adaptation) |
+| `estimate_capacity` | PRBs necessários p/ um alvo de throughput e se cabem no orçamento (desconta uso e reservas ativas das outras slices) | modelo estático (`# TODO` link adaptation) |
 | `allocate_prb` | Define a fração de PRB da slice no gNB | stub (`# TODO` RIC/xApp E2); persiste em `ran_allocations` mas não toca o gNB |
-| `revert_prb` | Restaura a alocação anterior de uma intent | real (tabela `ran_allocations`) |
+| `revert_prb` | Restaura a alocação anterior de uma intent | real (tabela `ran_allocations`); determinístico quando chamado via MCP |
 
 Modelo de rádio configurável por env: `RAN_PRB_TOTAL` (default 51), `RAN_MBPS_PER_PRB` (default 0.40).
 
@@ -411,7 +478,10 @@ curl -X POST localhost:8080/analytics -H 'content-type: application/json' \
 | `NF_LOAD` / `USER_DATA_CONGESTION` / `ABNORMAL_BEHAVIOUR` | mock - precisam de features que o schema ainda não coleta (métricas de NF, sinais de congestionamento por usuário, baseline de anomalia) |
 
 Se o histórico ainda for curto (`collector` rodando há pouco tempo), cai pra
-mock com `reason: "insufficient history in core_kpis"`. Se a NWDAF estiver
+mock com `reason: "insufficient history in core_kpis"`; se a amostra mais
+recente for mais velha que `NWDAF_MAX_STALENESS_S` (default 120 s — collector
+parado), cai pra mock com `reason: "stale history ..."` em vez de prever sobre
+dado velho. Se a NWDAF estiver
 fora do ar, o `nwdaf_client` do CN-NSSMF absorve o erro e também cai pra mock,
 o loop ReAct não quebra.
 
@@ -422,9 +492,28 @@ LSTM (prometida no TCC I cap. 4) de forma offline sobre o histórico de `core_kp
 POSTGRES_HOST=localhost python agents/nwdaf/benchmark_rq4.py
 ```
 
+Inclui dois baselines ingênuos (`baseline_persistence` = último valor,
+`baseline_train_mean`): um modelo só "aprende" algo se bater os dois. Sobre o
+histórico do collector `mock` (ruído i.i.d.) todos empatam com a média; para
+um resultado interpretável, rode sobre histórico sintético com estrutura num
+banco dedicado:
+
+```bash
+docker exec postgres psql -U minas -d minas -c "CREATE DATABASE minas_synth"
+docker exec -i postgres psql -U minas -d minas_synth < agents/schema.sql
+POSTGRES_HOST=localhost POSTGRES_DB=minas_synth python agents/collector/backfill_synthetic.py --days 7
+POSTGRES_HOST=localhost POSTGRES_DB=minas_synth NWDAF_HISTORY_LIMIT=20000 python agents/nwdaf/benchmark_rq4.py
+```
+
+O arquivo de saída leva o nome do banco (`rq4_minas_synth_*.jsonl`).
+
 Configurável por env: `NWDAF_N_LAGS` (default 5), `NWDAF_HISTORY_LIMIT`
-(default 500), `NWDAF_MIN_TRAINING_ROWS` (default 5),
-`NWDAF_SLICE_CAPACITY_MBPS` (default 100 - normaliza Mbps previsto em carga 0–1).
+(default 500), `NWDAF_MIN_TRAINING_ROWS` (default 5 no serviço, 20 no RQ4),
+`NWDAF_SLICE_CAPACITY_MBPS` (default `RAN_PRB_TOTAL × RAN_MBPS_PER_PRB` =
+20,4 — o mesmo modelo de rádio da RAN; normaliza Mbps previsto em carga 0–1),
+`NWDAF_MAX_STALENESS_S` (default 120). As janelas de lag (`agents/nwdaf/dataset.py`,
+compartilhado com o RQ4) usam a mediana do intervalo entre amostras e descartam
+janelas que atravessam buracos do collector.
 
 ### Collector (`agents/collector/`)
 
@@ -437,12 +526,15 @@ Fonte plugável por tabela:
 
 | Fonte | `core_kpis` | `ran_kpis` | Descrição |
 |---|:---:|:---:|---|
-| `prometheus` | ✔ (padrão) | ✔ | Prometheus HTTP API sobre os exportadores Open5GS. RAN só consegue aproximar throughput pelos contadores N3 da UPF (HANDOVER-2026-08-25, "Opção 1"); RSRP/SINR/MCS/PRB ficam `NULL`. |
+| `prometheus` | ✔ (padrão) | ✔ | Prometheus HTTP API. Throughput **por slice** vem dos contadores das TUN da UPF (`ogstun` = SST 1, `ogstun2` = SST 2, via `upf-netdev`); UEs/sessões vêm do AMF/SMF (agregado). Na RAN, RSRP/SINR/MCS/PRB ficam `NULL`. |
 | `o1` | - | ✔ | **ideal para RAN**: NETCONF/YANG contra o gNB (TS 28.552). Stub em `o1_client.py`, não conectado (depende do software do gNB, HANDOVER-2026-09-01 §3). |
-| `mock` | ✔ | ✔ (padrão) | linhas sintéticas, para desenvolver o pipeline antes das métricas reais existirem. |
+| `synthetic` | ✔ | ✔ | série por slice **com estrutura temporal** (ciclo diário no fuso local + AR(1) + picos, `synth.py`); core e RAN usam o mesmo valor no ciclo e o PRB sai do modelo de rádio da RAN. Use em vez de `mock` quando algo aprende com os dados (NWDAF, UC1). |
+| `mock` | ✔ | ✔ (padrão) | ruído i.i.d., só para exercitar o pipeline. |
 
-Open5GS 2.6.4 expõe poucas métricas rotuladas por slice, então o agregado é
-atribuído a todas as slices - ver `# TODO` sobre o rótulo `snssai` em `main.py`.
+UEs e sessões PDU ainda são agregados (Open5GS 2.6.4 tem poucas métricas
+rotuladas por slice) - ver `# TODO(lab)` em `main.py`. Na stack mockada (sem
+Prometheus), use `CORE_SOURCE=mock`: senão toda amostra de núcleo falha e
+`core_kpis` para de crescer.
 
 ```bash
 cd agents/collector
@@ -455,8 +547,10 @@ CORE_SOURCE=mock RAN_SOURCE=mock SLICES=1,2 python main.py
 | `PROMETHEUS_URL` | `http://prometheus:9090` | endpoint do Prometheus |
 | `COLLECT_INTERVAL` | `10` | segundos entre amostras |
 | `SLICES` | `1,2` | SSTs a coletar |
-| `CORE_SOURCE` | `prometheus` | `prometheus` \| `mock` |
-| `RAN_SOURCE` | `mock` | `prometheus` \| `o1` \| `mock` |
+| `CORE_SOURCE` | `prometheus` | `prometheus` \| `synthetic` \| `mock` |
+| `SLICE_TUN` | `1:ogstun,2:ogstun2` | SST → interface TUN da UPF |
+| `RAN_SOURCE` | `mock` | `prometheus` \| `synthetic` \| `o1` \| `mock` |
+| `SYNTH_SEED` | `0` | semente da fonte `synthetic` |
 
 ---
 
@@ -468,7 +562,8 @@ Verifica restrições derivadas das specs 3GPP (TS 23.501, TS 28.312):
 - throughput > 0
 - GBR ≤ MBR
 - 5QI ∈ [1, 86]
-- `window_end` > `window_start`
+- `window_end` > `window_start`, e `window_end` ainda no futuro
+- throughput / GBR / MBR ≤ `GUARDRAIL_MAX_RATE_MBPS` (default 1000 = Session-AMBR provisionado)
 
 Uma violação retorna `{"error": "...", "guardrail": true}` como resultado da
 ferramenta. O LLM recebe o erro e pode corrigir no próximo passo do ReAct.
@@ -505,14 +600,25 @@ Scripts para a avaliação sistemática do TCC II:
 | `intent_set.py` | 16 intents com gabarito (SST, throughput, janela, ferramentas esperadas) |
 | `run_benchmark.py` | Roda uma célula do fatorial (1 modelo × 1 configuração de ablação) e salva JSONL |
 | `run_llm_benchmark.py` | Itera sobre múltiplos modelos: recria containers, aguarda /health, delega ao `run_benchmark.py`, imprime tabela comparativa |
+| `run_window_probes.py` | Intenções com janelas curtas alguns minutos à frente: mede agendamento, aplicação antecipada (não pode haver), atraso de ativação, atraso de reversão e reversão correta |
+| `sla_report.py` | Taxa de cumprimento de SLA (Seção 5.4) a partir de `sla_samples` |
 
-Para rodar o benchmark de LLM (requer Docker + Ollama):
+Para rodar o benchmark de LLM (requer Docker + Ollama), com os monitores em
+segundo plano desligados para não disparar chamadas ao LLM no meio das medições:
 
 ```bash
+UC1_ENABLED=false SLA_MONITOR_ENABLED=false \
 python agents/benchmark/run_llm_benchmark.py \
   --models qwen2.5:7b llama3.1:8b \
   --repeats 3
+
+POSTGRES_HOST=localhost python agents/benchmark/run_window_probes.py --probes 4
+POSTGRES_HOST=localhost python agents/benchmark/sla_report.py
 ```
+
+A taxa de SLA só mede a garantia quando havia demanda na taxa-alvo (no lab,
+iperf na taxa do intent durante a janela); com o collector mock/synthetic,
+throughput baixo é slice ociosa, não violação.
 
 ---
 
@@ -529,6 +635,15 @@ Schema em `agents/schema.sql`. Tabelas principais:
 | `negotiations` | Rodadas de negociação CN-NSSMF ↔ RAN-NSSMF |
 | `policies` | Políticas de QoS aplicadas e seu ciclo de vida |
 | `ran_allocations` | Alocações de PRB por intent (permite revert_prb rastreável) |
+| `events` | Avisos do UC1 (`predicted_exhaustion`), violações de SLA (`sla_violation`, `sla_violation_predicted`) |
+| `sla_samples` | Amostras do monitor de SLA por intent em vigor |
+
+`schema.sql` só roda quando o volume do Postgres é criado. Para um banco que já
+existe, aplique as migrações em ordem (são idempotentes):
+
+```bash
+for f in agents/migrations/*.sql; do docker exec -i postgres psql -U minas -d minas < "$f"; done
+```
 
 ---
 

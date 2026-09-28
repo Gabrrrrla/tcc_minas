@@ -166,9 +166,47 @@ def _recent_ran(sst: int | None) -> dict:
     }
 
 
-def _current_allocation(sst: int) -> dict:
-    # TODO: read the live per-slice PRB share from the gNB (srsRAN sched config / RIC).
-    return {"sst": sst, "prb": None, "source": "mock"}
+def _current_allocation(sst: int, exclude_intent: int | None = None) -> dict:
+    """PRB share currently reserved for the slice: the newest active
+    allocation, or none (prb=None = no dedicated reservation, i.e. the gNB's
+    default scheduling) — which is what a revert restores to when nothing
+    else is active. TODO: read it live from the gNB once enforcement is real."""
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, intent_id, prb_allocated
+              FROM ran_allocations
+             WHERE sst = %s AND status = 'active'
+               AND intent_id IS DISTINCT FROM %s
+          ORDER BY applied_at DESC
+             LIMIT 1
+            """,
+            (sst, exclude_intent),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return {"sst": sst, "prb": None, "source": "no-reservation"}
+    return {"sst": sst, "prb": row[2], "source": f"allocation {row[0]} (intent {row[1]})"}
+
+
+def _reserved_by_other_slices(sst: int) -> int:
+    """PRBs held by the active reservation of every OTHER slice (newest
+    active row per slice — older rows of the same slice are superseded)."""
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(prb_allocated), 0) FROM (
+                SELECT DISTINCT ON (sst) prb_allocated
+                  FROM ran_allocations
+                 WHERE status = 'active' AND sst <> %s
+                 ORDER BY sst, applied_at DESC
+            ) latest
+            """,
+            (sst,),
+        )
+        return int(cur.fetchone()[0])
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +287,12 @@ def _estimate_capacity(params: dict) -> dict:
 
     prb_needed = math.ceil(target / MBPS_PER_PRB)
     prb_used_other = _recent_ran(None)["prb_used_dl"] - _recent_ran(sst)["prb_used_dl"]
-    prb_available = max(PRB_TOTAL - max(prb_used_other, 0), 0)
+    # Admission control must also honour what MINAS already promised other
+    # slices, not just what they happen to be using right now — otherwise two
+    # concurrent intents on different slices could each get the whole cell.
+    # max(), not sum: a reservation that is being used shows up in both.
+    prb_reserved_other = _reserved_by_other_slices(sst)
+    prb_available = max(PRB_TOTAL - max(prb_used_other, prb_reserved_other, 0), 0)
     feasible = prb_needed <= prb_available
     shortfall = 0.0 if feasible else round((prb_needed - prb_available) * MBPS_PER_PRB, 2)
 
@@ -258,6 +301,7 @@ def _estimate_capacity(params: dict) -> dict:
         "target_thp_mbps": target,
         "prb_needed": prb_needed,
         "prb_available": prb_available,
+        "prb_reserved_other_slices": prb_reserved_other,
         "prb_total": PRB_TOTAL,
         "feasible": feasible,
         "shortfall_mbps": shortfall,
@@ -269,7 +313,7 @@ def _allocate_prb(params: dict) -> dict:
     sst = params["sst"]
     intent_id = params["intent_id"]
     est = _estimate_capacity({"sst": sst, "target_thp_mbps": params["target_thp_mbps"]})
-    previous = _current_allocation(sst)
+    previous = _current_allocation(sst, exclude_intent=intent_id)
 
     prb_alloc = est["prb_needed"] if est["feasible"] else est["prb_available"]
     status = "applied" if est["feasible"] else "degraded"
@@ -278,22 +322,36 @@ def _allocate_prb(params: dict) -> dict:
     # config reload; this is where a RIC/xApp (E2) or a scheduler policy would act.
     print(f"[ran-nssmf] allocate_prb sst={sst} prb={prb_alloc} status={status}")
 
+    # One active reservation per intent: a repeated allocate_prb for the same
+    # intent (LLM retry, or the scheduler re-activating after a transport
+    # error) resizes it instead of stacking rows. applied_at keeps the FIRST
+    # application (as policies does) — overwriting it made a retry look like
+    # a 160 s activation delay in the window probes.
     conn = get_db_conn()
     with conn, conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO ran_allocations
-                (intent_id, sst, prb_allocated, supported_thp_mbps, prb_previous, status)
-            VALUES (%s, %s, %s, %s, %s, 'active')
+            UPDATE ran_allocations
+               SET prb_allocated = %s, supported_thp_mbps = %s
+             WHERE intent_id = %s AND sst = %s AND status = 'active'
             """,
-            (
-                intent_id,
-                sst,
-                prb_alloc,
-                round(prb_alloc * MBPS_PER_PRB, 2),
-                previous.get("prb"),
-            ),
+            (prb_alloc, round(prb_alloc * MBPS_PER_PRB, 2), intent_id, sst),
         )
+        if cur.rowcount == 0:
+            cur.execute(
+                """
+                INSERT INTO ran_allocations
+                    (intent_id, sst, prb_allocated, supported_thp_mbps, prb_previous, status)
+                VALUES (%s, %s, %s, %s, %s, 'active')
+                """,
+                (
+                    intent_id,
+                    sst,
+                    prb_alloc,
+                    round(prb_alloc * MBPS_PER_PRB, 2),
+                    previous.get("prb"),
+                ),
+            )
 
     return {
         "status": status,
@@ -315,26 +373,31 @@ def _revert_prb(params: dict) -> dict:
             UPDATE ran_allocations
                SET status = 'reverted', reverted_at = NOW()
              WHERE intent_id = %s AND status = 'active'
-         RETURNING id, sst, prb_allocated, prb_previous
+         RETURNING id, sst, prb_allocated
             """,
             (intent_id,),
         )
-        row = cur.fetchone()
+        rows = cur.fetchall()
 
-    if row is None:
+    if not rows:
         return {"status": "noop", "reason": f"no active allocation for intent {intent_id}"}
 
-    alloc_id, sst, prb_was, prb_restore = row
+    sst = rows[0][1]
+    # What is in force now is whatever active reservation remains for the
+    # slice (another intent's), or none — not the prb_previous snapshot, which
+    # may itself have been reverted since.
+    now_in_force = _current_allocation(sst)
     print(f"[ran-nssmf] revert_prb intent={intent_id} sst={sst} "
-          f"from={prb_was} to={prb_restore}")
+          f"released={[r[2] for r in rows]} now={now_in_force['prb']}")
 
-    # TODO: push restored PRB share to gNB (RIC/xApp E2) when prb_restore is known.
+    # TODO: push now_in_force to the gNB (RIC/xApp E2) once enforcement is real.
     return {
         "status": "reverted",
-        "allocation_id": alloc_id,
+        "allocation_ids": [r[0] for r in rows],
         "sst": sst,
-        "prb_was": prb_was,
-        "prb_restored": prb_restore,
+        "prb_was": rows[0][2],
+        "prb_restored": now_in_force["prb"],
+        "now_in_force": now_in_force,
         "note": "gNB enforcement pending RIC/E2 integration",
     }
 

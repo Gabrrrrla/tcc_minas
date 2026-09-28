@@ -20,6 +20,13 @@ x-pg-env: &pg-env
 x-ollama-env: &ollama-env
   OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
   MINAS_MODEL: ${MINAS_MODEL:-qwen2.5:7b}
+  MINAS_TEMPERATURE: ${MINAS_TEMPERATURE:-}
+  MINAS_SEED: ${MINAS_SEED:-}
+  MINAS_NUM_CTX: ${MINAS_NUM_CTX:-8192}
+  MINAS_NUM_PREDICT: ${MINAS_NUM_PREDICT:-1024}
+  OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-180}
+  GUARDRAIL_MAX_RATE_MBPS: ${GUARDRAIL_MAX_RATE_MBPS:-1000}
+  MINAS_TZ: ${MINAS_TZ:-America/Sao_Paulo}
 
 services:
 
@@ -190,6 +197,19 @@ services:
       - ./open5gs/upf.yaml:/opt/open5gs/etc/open5gs/upf.yaml
     depends_on: [smf]
 
+  # Per-slice user-plane throughput: node-exporter inside the UPF's network
+  # namespace, so it sees ogstun (SST=1) / ogstun2 (SST=2) byte counters.
+  # Reachable at upf:9100 (it shares the UPF's IP). Read by the collector.
+  upf-netdev:
+    image: prom/node-exporter:v1.8.2
+    container_name: upf-netdev
+    network_mode: "service:upf"
+    command:
+      - --collector.disable-defaults
+      - --collector.netdev
+      - --web.listen-address=:9100
+    depends_on: [upf]
+
   webui:
     image: gradiant/open5gs-webui:2.6.4
     container_name: webui
@@ -213,7 +233,7 @@ services:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
     ports:
       - "9090:9090"
-    depends_on: [amf, smf, upf]
+    depends_on: [amf, smf, upf, upf-netdev]
 
   grafana:
     image: grafana/grafana:11.1.0
@@ -261,6 +281,7 @@ services:
     environment:
       <<: *pg-env
       NWDAF_PORT: "8080"
+      NWDAF_MAX_STALENESS_S: "${NWDAF_MAX_STALENESS_S:-120}"
     ports:
       - "8080:8080"
     networks:
@@ -281,6 +302,9 @@ services:
       CN_NSSMF_PORT: "8001"
       NWDAF_URL: http://nwdaf:8080
       ORCHESTRATOR_URL: http://orchestrator:8000
+      # UC1 proactive monitor (cn-nssmf/monitor.py) — set false for LLM
+      # benchmark runs, or its events add LLM calls mid-measurement
+      UC1_ENABLED: "${UC1_ENABLED:-true}"
       GUARDRAILS_ENABLED: "${GUARDRAILS_ENABLED:-true}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -339,6 +363,7 @@ services:
       CN_NSSMF_URL: http://cn-nssmf:8001
       RAN_NSSMF_URL: http://ran-nssmf:8002
       RAG_ENABLED: "${RAG_ENABLED:-true}"
+      SLA_MONITOR_ENABLED: "${SLA_MONITOR_ENABLED:-true}"
       GUARDRAILS_ENABLED: "${GUARDRAILS_ENABLED:-true}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -367,6 +392,8 @@ services:
       COLLECT_INTERVAL: "${COLLECT_INTERVAL:-10}"
       SLICES: "${SLICES:-1,2}"
       CORE_SOURCE: "${CORE_SOURCE:-prometheus}"
+      SLICE_TUN: "${SLICE_TUN:-1:ogstun,2:ogstun2}"
+      SYNTH_SEED: "${SYNTH_SEED:-0}"
       RAN_SOURCE: "${RAN_SOURCE:-mock}"
     networks:
       minas-net:
