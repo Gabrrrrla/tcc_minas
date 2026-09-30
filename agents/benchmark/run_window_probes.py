@@ -71,7 +71,10 @@ def plan(n: int, lead_min: float, duration_min: int, gap_min: int, base: datetim
 def _state(conn, intent_id: int) -> dict:
     with conn.cursor() as cur:
         cur.execute("SELECT status, window_start, window_end FROM intents WHERE id = %s", (intent_id,))
-        status, ws, we = cur.fetchone()
+        row = cur.fetchone()
+        if row is None:
+            raise RuntimeError(f"intent {intent_id} not found in DB")
+        status, ws, we = row
         cur.execute(
             """
             SELECT 'cn', applied_at, reverted_at, status FROM policies WHERE intent_id = %s

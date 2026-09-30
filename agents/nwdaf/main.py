@@ -59,6 +59,11 @@ SLICE_CAPACITY_MBPS = float(os.getenv(
     "NWDAF_SLICE_CAPACITY_MBPS",
     int(os.getenv("RAN_PRB_TOTAL", "51")) * float(os.getenv("RAN_MBPS_PER_PRB", "0.40")),
 ))
+if SLICE_CAPACITY_MBPS <= 0:
+    raise ValueError(
+        f"NWDAF_SLICE_CAPACITY_MBPS resolved to {SLICE_CAPACITY_MBPS} — "
+        "check RAN_PRB_TOTAL and RAN_MBPS_PER_PRB env vars"
+    )
 # A prediction is only meaningful over a live series: if the newest sample is
 # older than this (collector down / misconfigured), refuse instead of
 # silently forecasting from stale history.

@@ -286,7 +286,24 @@ def _estimate_capacity(params: dict) -> dict:
     target = params["target_thp_mbps"]
 
     prb_needed = math.ceil(target / MBPS_PER_PRB)
-    prb_used_other = _recent_ran(None)["prb_used_dl"] - _recent_ran(sst)["prb_used_dl"]
+    # Query PRBs used by other slices directly (WHERE sst != target) instead of
+    # subtracting two separate aggregates — subtraction can go negative when the
+    # two _recent_ran() calls hit slightly different time windows.
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(prb_used_dl), 0) FROM (
+                SELECT DISTINCT ON (sst, ue_id) prb_used_dl
+                  FROM ran_kpis
+                 WHERE collected_at > NOW() - INTERVAL %s
+                   AND sst <> %s
+                 ORDER BY sst, ue_id, collected_at DESC
+            ) latest
+            """,
+            (RECENT_WINDOW, sst),
+        )
+        prb_used_other = int(cur.fetchone()[0])
     # Admission control must also honour what MINAS already promised other
     # slices, not just what they happen to be using right now — otherwise two
     # concurrent intents on different slices could each get the whole cell.
