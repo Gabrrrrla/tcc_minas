@@ -35,11 +35,15 @@ def parse_iso(value: str) -> datetime:
 
 def prompt_header() -> str:
     """The block the orchestrator prepends to every intent."""
+    # no concrete clock times in the example: an earlier "from 18h to 22h" /
+    # "<today>T18:00" example was copied into intents that state no window
     n = now().replace(microsecond=0)
     return (
         "## Current date and time\n"
         f"{n.isoformat()} ({TZ_NAME}, {n.strftime('%A')})\n"
-        "Resolve relative dates/times in the intent (\"tonight\", \"tomorrow\", "
-        "\"from 18h to 22h\") against this moment, in this time zone, and write "
-        f"window_start/window_end as ISO-8601 WITH the offset (e.g. {n.strftime('%Y-%m-%d')}T18:00:00{n.strftime('%z')[:3]}:{n.strftime('%z')[3:]})."
+        "If the intent states a time window, resolve its relative dates/times "
+        "(\"tonight\", \"tomorrow\") against this moment, in this time zone, and "
+        "write window_start/window_end as ISO-8601 WITH the UTC offset "
+        f"(YYYY-MM-DDTHH:MM:SS{n.strftime('%z')[:3]}:{n.strftime('%z')[3:]}). "
+        "If the intent states no time window, omit window_start and window_end."
     )

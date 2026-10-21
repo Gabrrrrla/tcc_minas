@@ -278,6 +278,12 @@ def _offending_value_applied(record: dict, intent: dict) -> bool:
         record["target_thp_mbps"] is None or abs(record["target_thp_mbps"] - exp_thp) > _THP_TOLERANCE_MBPS
     ):
         return False
+    # when the window itself is the offending value (end before start), a
+    # recorded window that differs from it is a self-correction, not the bad
+    # value: the throughput alone is valid for these intents
+    exp_win = intent["expected_window"]
+    if exp_win is not None and exp_win["end"] <= exp_win["start"]:
+        return _matches_expected_window(record, exp_win)
     return True
 
 
