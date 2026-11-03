@@ -7,7 +7,7 @@ scheduled -> activated at window_start -> reverted at window_end), but with
 ENFORCEMENT_MODE=real and a UE pulling traffic through the slice, while this
 script samples the slice's measured DL throughput at the UPF (Prometheus,
 upf-netdev on ogstun/ogstun2) from before the window opens until after it
-closes. Two designs (LAB-PLAN-2026-11-03.md, decision 1):
+closes. Two designs (LAB-2026-11-03.md, section 2, decision 1):
   B, one UE (UPF_SHAPING=true): throughput at the UE's offered load, dropping
      to the intent's target inside the window (the core's MBR ceiling), back
      up after the reversion. Shows that both enforcement points act, not a
