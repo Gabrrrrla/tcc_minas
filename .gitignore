@@ -30,3 +30,6 @@ agents/benchmark/results/
 # Pastas do texto do TCC I e II (locais, não versionadas)
 tcc1/
 tcc2/
+
+# lab runs (scripts/lab_collect.sh)
+lab-data/

@@ -30,7 +30,59 @@ services:
         ipv4_address: 10.11.0.70
     depends_on: [upf]
 
+  # iperf3 -s serves ONE client at a time: a second server for the second UE
+  # (two UEs on the two slices at once, LAB-ROTEIRO E2).
+  iperf-b:
+    image: networkstatic/iperf3:latest
+    container_name: iperf-b
+    command: ["-s"]
+    networks:
+      minas-net:
+        ipv4_address: 10.11.0.71
+    depends_on: [upf]
+
   collector:
     environment:
       CORE_SOURCE: prometheus    # real per-slice throughput from upf-netdev (ogstun/ogstun2)
       RAN_SOURCE: prometheus     # UPF-side throughput until a RAN_SOURCE=srsran exists
+
+  # --- Real enforcement (agents/enforcement.py) ------------------------------
+  # Core: tc rate limit per slice on the UPF's TUN devices. Shares the UPF's
+  # network namespace, so it is reachable at upf:9300 and sees ogstun/ogstun2.
+  upf-shaper:
+    build:
+      context: .
+      dockerfile: agents/enforcers/Dockerfile
+    image: minas-enforcer:local
+    container_name: upf-shaper
+    network_mode: "service:upf"
+    cap_add: [NET_ADMIN]
+    environment:
+      SLICE_TUN: "${SLICE_TUN:-1:ogstun,2:ogstun2}"
+    depends_on: [upf]
+    restart: unless-stopped
+
+  # RAN: gnb_slicer.py runs natively on the host (next to the gNB), port 8010,
+  # reached through the minas-net bridge gateway. Start it before the agents:
+  #   sudo GNB_TEMPLATE=<gnb.yaml do lab> python3 agents/enforcers/gnb_slicer.py
+  cn-nssmf:
+    environment:
+      ENFORCEMENT_MODE: "${ENFORCEMENT_MODE:-real}"
+      UPF_SHAPER_URL: http://upf:9300
+      UPF_SHAPING: "${UPF_SHAPING:-true}"   # false: no rate limit at the UPF (see agents/enforcement.py)
+    depends_on: [upf-shaper]
+
+  ran-nssmf:
+    environment:
+      ENFORCEMENT_MODE: "${ENFORCEMENT_MODE:-real}"
+      GNB_SLICER_URL: "${GNB_SLICER_URL:-http://10.11.0.1:8010}"
+      ENFORCEMENT_TIMEOUT_S: "${ENFORCEMENT_TIMEOUT_S:-90}"   # a gNB restart answers after the cell is back up
+      # cell model (ran-nssmf/tools.py): set from the lab cell after E0, LAB-ROTEIRO
+      RAN_PRB_TOTAL: "${RAN_PRB_TOTAL:-51}"
+      RAN_MBPS_PER_PRB: "${RAN_MBPS_PER_PRB:-0.40}"
+
+  # same cell model for the NWDAF's load level (capacity = PRB_TOTAL x MBPS_PER_PRB)
+  nwdaf:
+    environment:
+      RAN_PRB_TOTAL: "${RAN_PRB_TOTAL:-51}"
+      RAN_MBPS_PER_PRB: "${RAN_MBPS_PER_PRB:-0.40}"

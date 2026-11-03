@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import enforcement
 from db import get_db_conn
 from guardrails import check as guardrail_check
 from nwdaf_client import get_analytics
@@ -156,10 +157,11 @@ def _query_nwdaf(params: dict) -> dict:
     )
 
 
-def _current_qos(sst: int) -> dict:
-    """QoS currently in force for the slice: the newest active policy, or the
-    provisioned baseline when none is active.
-    TODO: read it live from PCF/SMF once enforcement is real."""
+def _current_qos(sst: int, exclude_intent: int | None = None) -> dict:
+    """QoS currently in force for the slice: the newest active policy (other
+    than `exclude_intent`'s), or the provisioned baseline when none is active.
+    With ENFORCEMENT_MODE=real this is also what the UPF holds, since a policy
+    is only persisted after the UPF accepted it."""
     conn = get_db_conn()
     with conn.cursor() as cur:
         cur.execute(
@@ -167,10 +169,11 @@ def _current_qos(sst: int) -> dict:
             SELECT id, intent_id, qos_5qi, gbr_dl_mbps, mbr_dl_mbps
               FROM policies
              WHERE sst = %s AND status = 'active'
+               AND intent_id IS DISTINCT FROM %s
           ORDER BY applied_at DESC
              LIMIT 1
             """,
-            (sst,),
+            (sst, exclude_intent),
         )
         row = cur.fetchone()
     if row is None:
@@ -217,12 +220,13 @@ def _configure_qos(params: dict) -> dict:
     qos_5qi = params.get("qos_5qi") or DEFAULT_5QI.get(sst)
     gbr_dl = params.get("gbr_dl_mbps")
 
-    previous = _current_qos(sst)
+    previous = _current_qos(sst, exclude_intent=params["intent_id"])
 
-    # TODO: real enforcement. Two normative touch-points:
-    #   PCF — install/modify the PCC rule for the S-NSSAI (TS 23.503)
-    #   SMF — update Session-AMBR / QoS Flow GBR/MBR for the DNN (TS 23.502)
-    # For Open5GS: edit pcf.yaml / smf.yaml policy (or call its API) and reload the NF.
+    # Enforcement point: the slice's DL rate limit at the UPF (MBR, TS 23.501
+    # 5.7.1.8), pushed BEFORE persisting so a policy row always means "in
+    # force". The normative path through PCF (PCC rule, TS 23.503) and SMF
+    # (Session-AMBR, TS 23.502) would need a session modification per UE;
+    # Open5GS only reads them at session establishment.
     applied = {
         "sst":         sst,
         "qos_5qi":     qos_5qi,
@@ -231,15 +235,36 @@ def _configure_qos(params: dict) -> dict:
         "mbr_dl_mbps": params.get("mbr_dl_mbps") or gbr_dl,
         "mbr_ul_mbps": params.get("mbr_ul_mbps"),
     }
+    try:
+        enf = enforcement.push_core(sst, applied["mbr_dl_mbps"])
+    except enforcement.EnforcementError as e:
+        return {"status": "failed", "error": f"enforcement at the UPF failed: {e}",
+                "applied": None, "previous": previous}
     policy_id, _ = _upsert_policy(params["intent_id"], sst, gbr_dl, qos_5qi,
                                   gbr_dl, applied["mbr_dl_mbps"])
-    return {"status": "applied", "targets": ["pcf", "smf"], "applied": applied,
-            "previous": previous, "policy_id": policy_id}
+    out = {"status": "applied", "targets": ["pcf", "smf"], "applied": applied,
+           "previous": previous, "policy_id": policy_id}
+    if enforcement.is_real():  # mock output stays identical to the benchmark rounds'
+        out.update(targets=["upf"], enforcement=enf)
+    return out
 
 
 def _revert_qos(params: dict) -> dict:
     intent_id = params["intent_id"]
     conn = get_db_conn()
+    # restore at the UPF FIRST what remains in force once this intent's
+    # policies go (another intent's newest policy, or no limit); if that
+    # fails, the rows stay active and the scheduler retries on its next poll
+    enf: dict = {"mode": "mock"}
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT sst FROM policies WHERE intent_id = %s AND status = 'active'",
+                    (intent_id,))
+        ssts = [r[0] for r in cur.fetchall()]
+    try:
+        for s_ in ssts:
+            enf = enforcement.push_core(s_, _current_qos(s_, exclude_intent=intent_id).get("mbr_dl_mbps"))
+    except enforcement.EnforcementError as e:
+        return {"status": "failed", "error": f"restoring the UPF limit failed: {e}"}
     with conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -253,13 +278,13 @@ def _revert_qos(params: dict) -> dict:
         rows = cur.fetchall()
     if not rows:
         return {"status": "noop", "reason": f"no active policy for intent {intent_id}"}
-    # TODO: push the restored PCC rule / session parameters back to PCF + SMF.
     return {
         "status": "reverted",
         "policy_ids": [r[0] for r in rows],
         "sst": rows[0][1],
         "restored_from_thp_mbps": rows[0][2],
         "now_in_force": _current_qos(rows[0][1]),
+        **({"enforcement": enf} if enforcement.is_real() else {}),
     }
 
 
@@ -293,6 +318,23 @@ def _get_core_kpis(params: dict) -> dict:
 
 
 def _record_policy(params: dict) -> dict:
+    # Only amends a row configure_qos wrote, i.e. a policy that is in force.
+    # Seen in the lab rehearsal: configure_qos failed (UPF unreachable) and the
+    # model then called record_policy, which created an 'active' row for a
+    # policy the network never received.
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT gbr_dl_mbps, mbr_dl_mbps FROM policies "
+                    "WHERE intent_id = %s AND sst = %s AND status = 'active'",
+                    (params["intent_id"], params["sst"]))
+        row = cur.fetchone()
+    if row is None:
+        return {"status": "failed", "error": "no policy in force for this intent and slice: "
+                "call configure_qos first (record_policy only amends what it recorded)"}
+    if enforcement.is_real():
+        # the rate values in force are the ones the UPF accepted; changing
+        # them here would make the record disagree with the network
+        params = {**params, "gbr_dl_mbps": row[0], "mbr_dl_mbps": row[1]}
     policy_id, created = _upsert_policy(
         params["intent_id"], params["sst"], params["enforced_thp_mbps"],
         params.get("qos_5qi"), params.get("gbr_dl_mbps"), params.get("mbr_dl_mbps"),

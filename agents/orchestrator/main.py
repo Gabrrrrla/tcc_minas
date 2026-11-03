@@ -26,7 +26,8 @@ import timeutil
 from db import get_db_conn
 from rag.retriever import format_context, retrieve
 from react import MODEL, OLLAMA_URL, react_loop
-from tools import dispatch_tool, get_tool_schemas, intent_status
+from mcp_common import call_remote_tool
+from tools import CN_NSSMF_URL, RAN_NSSMF_URL, dispatch_tool, get_tool_schemas, intent_status
 
 PORT = int(os.getenv("ORCHESTRATOR_PORT", "8000"))
 
@@ -100,6 +101,11 @@ def _infer_status_for_intent(trace: list[dict], intent_id: int) -> str:
     ]
     if not applies:
         return "failed"
+    # both domains or neither: a guarantee configured in one domain only is
+    # not the intent (seen in the regression run after D15: the model called
+    # only cn_nssmf_apply_qos and the core stayed in force alone)
+    if not ({t["tool"].split("_apply")[0] for t in applies} >= {"cn_nssmf", "ran_nssmf"}):
+        return "failed"
     statuses = [t["result"].get("status") for t in applies]
     if any("error" in t["result"] for t in applies) or "failed" in statuses:
         return "failed"
@@ -163,7 +169,38 @@ def run(intent_text: str) -> dict:
               f"for intent {intent_id} — setting it to '{status}' deterministically")
         dispatch_tool("update_intent_status", {"intent_id": intent_id, "status": status})
 
+    # D15: when directives were issued, the final status is the domains'
+    # structured outcome, not the model's report. Seen in the lab rehearsal:
+    # the RAN directive came back 'failed' (its model narrated allocate_prb
+    # instead of calling it) and the model still marked the intent 'applied',
+    # leaving the core policy in force alone. Same rule as the scheduler's
+    # activation: a failed domain rolls back both and fails the intent.
+    for intent_id in created_ids:
+        acted = any(t["tool"].startswith(("cn_nssmf_apply", "ran_nssmf_apply"))
+                    and t["input"].get("intent_id") == intent_id for t in trace)
+        if not acted or intent_status(intent_id) == "scheduled":
+            continue
+        _settle(intent_id, _infer_status_for_intent(trace, intent_id), trace)
+
     return {"outcome": result["final"], "trace": trace, "intent_ids": sorted(created_ids)}
+
+
+def _settle(intent_id: int, status: str, trace: list[dict]) -> None:
+    """Make the recorded status match the domains' structured outcome; on
+    'failed', roll back both domains first (revert_* answer 'noop' where
+    nothing was applied)."""
+    if status == "failed":
+        sst = next((t["input"].get("sst") for t in trace
+                    if t["tool"].startswith(("cn_nssmf_apply", "ran_nssmf_apply"))
+                    and t["input"].get("intent_id") == intent_id), None)
+        for url, tool in ((CN_NSSMF_URL, "revert_qos"), (RAN_NSSMF_URL, "revert_resources")):
+            res = call_remote_tool(url, tool, {"intent_id": intent_id, "sst": sst})
+            print(f"[orchestrator] rollback {tool} intent={intent_id} -> {res.get('status')} {res.get('error', '')}")
+    current = intent_status(intent_id)
+    if current != status:
+        print(f"[orchestrator] intent {intent_id}: model reported '{current}', domains say "
+              f"'{status}' — recording '{status}'")
+        dispatch_tool("update_intent_status", {"intent_id": intent_id, "status": status})
 
 
 @app.post("/intent")

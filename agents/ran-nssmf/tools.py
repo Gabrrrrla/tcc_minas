@@ -18,6 +18,7 @@ import math
 import os
 from typing import Any
 
+import enforcement
 from db import get_db_conn
 from guardrails import check as guardrail_check
 
@@ -209,6 +210,25 @@ def _reserved_by_other_slices(sst: int) -> int:
         return int(cur.fetchone()[0])
 
 
+def _reservations_without(intent_id: int) -> dict[int, int | None]:
+    """PRB reservation per slice of the cell if `intent_id`'s allocations were
+    gone: the newest active allocation of every slice (None = no reservation).
+    This is the full state pushed to the gNB, never a delta."""
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (sst) sst, prb_allocated
+              FROM ran_allocations
+             WHERE status = 'active' AND intent_id IS DISTINCT FROM %s
+             ORDER BY sst, applied_at DESC
+            """,
+            (intent_id,),
+        )
+        found = dict(cur.fetchall())
+    return {sst: found.get(sst) for sst in sorted({1, 2} | set(found))}
+
+
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
@@ -335,9 +355,16 @@ def _allocate_prb(params: dict) -> dict:
     prb_alloc = est["prb_needed"] if est["feasible"] else est["prb_available"]
     status = "applied" if est["feasible"] else "degraded"
 
-    # TODO: real enforcement at the gNB. srsRAN has no dynamic per-slice PRB via
-    # config reload; this is where a RIC/xApp (E2) or a scheduler policy would act.
+    # Enforcement at the gNB BEFORE persisting: per-slice minimum PRB ratio in
+    # the srsRAN config (agents/enforcers/gnb_slicer.py). srsRAN reads it only
+    # at start-up, so the slicer restarts the gNB when the ratios change; an
+    # E2/RIC xApp would do it live, out of this work's scope.
     print(f"[ran-nssmf] allocate_prb sst={sst} prb={prb_alloc} status={status}")
+    try:
+        enf = enforcement.push_ran(PRB_TOTAL, {**_reservations_without(intent_id), sst: prb_alloc})
+    except enforcement.EnforcementError as e:
+        return {"status": "failed", "error": f"enforcement at the gNB failed: {e}",
+                "sst": sst, "previous": previous}
 
     # One active reservation per intent: a repeated allocate_prb for the same
     # intent (LLM retry, or the scheduler re-activating after a transport
@@ -370,7 +397,7 @@ def _allocate_prb(params: dict) -> dict:
                 ),
             )
 
-    return {
+    out = {
         "status": status,
         "targets": ["srsran-gnb"],
         "sst": sst,
@@ -379,11 +406,26 @@ def _allocate_prb(params: dict) -> dict:
         "shortfall_mbps": est["shortfall_mbps"],
         "previous": previous,
     }
+    if enforcement.is_real():  # mock output stays identical to the benchmark rounds'
+        out["enforcement"] = enf
+    return out
 
 
 def _revert_prb(params: dict) -> dict:
     intent_id = params["intent_id"]
     conn = get_db_conn()
+    # gNB first: if the restore fails, the rows stay active and the scheduler
+    # retries on its next poll instead of recording a reversion that isn't real
+    enf: dict = {"mode": "mock"}
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM ran_allocations WHERE intent_id = %s AND status = 'active'",
+                    (intent_id,))
+        has_active = cur.fetchone() is not None
+    if has_active:
+        try:
+            enf = enforcement.push_ran(PRB_TOTAL, _reservations_without(intent_id))
+        except enforcement.EnforcementError as e:
+            return {"status": "failed", "error": f"restoring the gNB slicing failed: {e}"}
     with conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -407,8 +449,7 @@ def _revert_prb(params: dict) -> dict:
     print(f"[ran-nssmf] revert_prb intent={intent_id} sst={sst} "
           f"released={[r[2] for r in rows]} now={now_in_force['prb']}")
 
-    # TODO: push now_in_force to the gNB (RIC/xApp E2) once enforcement is real.
-    return {
+    out = {
         "status": "reverted",
         "allocation_ids": [r[0] for r in rows],
         "sst": sst,
@@ -417,6 +458,10 @@ def _revert_prb(params: dict) -> dict:
         "now_in_force": now_in_force,
         "note": "gNB enforcement pending RIC/E2 integration",
     }
+    if enforcement.is_real():
+        out.pop("note")
+        out["enforcement"] = enf
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -210,7 +210,7 @@ def _record_intent(params: dict) -> dict:
                AND window_start    IS NOT DISTINCT FROM %s
                AND window_end      IS NOT DISTINCT FROM %s
                AND received_at > NOW() - INTERVAL '2 minutes'
-               AND status <> 'reverted'
+               AND status NOT IN ('reverted', 'failed')  -- a finished, failed request may be retried
              ORDER BY id DESC LIMIT 1
             """,
             (sst, target_thp_mbps, window_start, window_end),

@@ -53,6 +53,27 @@ def _due_intents() -> list[tuple[int, int]]:
         return cur.fetchall()
 
 
+def _failed_with_leftovers() -> list[tuple[int, int]]:
+    """Failed intents that still have a policy or allocation marked active: a
+    rollback that could not complete (a domain or its enforcement point was
+    unreachable). Nothing else would ever revert them, since the reversion job
+    only looks at applied/degraded intents."""
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT i.id, i.sst
+              FROM intents i
+             WHERE i.status = 'failed'
+               AND (EXISTS (SELECT 1 FROM policies p
+                             WHERE p.intent_id = i.id AND p.status = 'active')
+                 OR EXISTS (SELECT 1 FROM ran_allocations r
+                             WHERE r.intent_id = i.id AND r.status = 'active'))
+            """
+        )
+        return cur.fetchall()
+
+
 def _due_activations() -> list[tuple]:
     """Scheduled intents whose window has opened."""
     conn = get_db_conn()
@@ -107,10 +128,23 @@ def _revert_one(intent_id: int, sst: int) -> None:
 
 def _activate_one(intent_id: int, sst: int, target_thp_mbps, window_end) -> None:
     if window_end is not None and window_end <= datetime.now(timezone.utc):
-        # orchestrator was down for the whole window: applying now would put
-        # the policy in force outside the window the operator asked for
-        print(f"[scheduler] intent {intent_id}: window already closed before activation — failed")
-        _mark_status(intent_id, "failed")
+        # The window closed before the activation completed (orchestrator down
+        # for the whole window, or a domain unreachable while the other one
+        # already applied, see the retry branch below). Applying now would put
+        # the policy in force outside the window, and the reversion job ignores
+        # 'failed' intents, so roll back BOTH domains first (revert_* answer
+        # 'noop' where nothing was applied) and fail the intent only when both
+        # confirm; otherwise it stays 'scheduled' and this retries next poll.
+        # (D13: before this, a domain that applied while the other was
+        # unreachable stayed in force indefinitely.)
+        cn_ok = _send_revert(CN_NSSMF_URL, intent_id, "revert_qos", sst)
+        ran_ok = _send_revert(RAN_NSSMF_URL, intent_id, "revert_resources", sst)
+        if cn_ok and ran_ok:
+            print(f"[scheduler] intent {intent_id}: window closed before activation completed — "
+                  f"rolled back, failed")
+            _mark_status(intent_id, "failed")
+        else:
+            print(f"[scheduler] intent {intent_id}: window closed, rollback incomplete — will retry next poll")
         return
 
     print(f"[scheduler] window opened for intent {intent_id} (sst={sst}) — activating")
@@ -152,6 +186,13 @@ def _loop() -> None:
                 _revert_one(intent_id, sst)
         except Exception as exc:  # a bad poll must not kill the thread
             print(f"[scheduler] poll error: {exc}")
+        try:
+            for intent_id, sst in _failed_with_leftovers():
+                print(f"[scheduler] failed intent {intent_id} still has active rows — rolling back")
+                _send_revert(CN_NSSMF_URL, intent_id, "revert_qos", sst)
+                _send_revert(RAN_NSSMF_URL, intent_id, "revert_resources", sst)
+        except Exception as exc:  # a bad poll must not kill the thread
+            print(f"[scheduler] cleanup poll error: {exc}")
         time.sleep(POLL_INTERVAL_SECONDS)
 
 

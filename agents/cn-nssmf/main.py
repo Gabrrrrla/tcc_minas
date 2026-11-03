@@ -24,6 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mcp.server.fastmcp import FastMCP
 
+from db import get_db_conn
+from guardrails import GUARDRAILS_ENABLED
 from react import MODEL, OLLAMA_URL, react_loop, scoped_tools
 from tools import TOOL_SCHEMAS, dispatch_tool
 
@@ -100,12 +102,47 @@ def _directive_status(action: str, trace: list[dict]) -> str:
     return results[-1].get("status", "applied")
 
 
+def _intent_target(intent_id: int) -> float | None:
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT target_thp_mbps FROM intents WHERE id = %s", (intent_id,))
+        row = cur.fetchone()
+    return float(row[0]) if row and row[0] is not None else None
+
+
+def _pin_gbr(dispatch, target: float):
+    """D14: within an apply_qos directive, configure_qos must set the GBR the
+    directive asked for. The benchmark showed the model choosing 100 or 200
+    Mbps, or a NWDAF prediction, for a 15 Mbps intent; with real enforcement
+    that GBR becomes the UPF's rate limit. A missing GBR is filled in; a
+    different one is refused with the expected value, so the model retries.
+    Follows the guardrail ablation switch like every other check."""
+    def pinned(name: str, params: dict) -> dict:
+        if name == "configure_qos":
+            gbr = params.get("gbr_dl_mbps")
+            if gbr is None:
+                params = {**params, "gbr_dl_mbps": target}
+            elif abs(float(gbr) - target) > 0.01:
+                err = {"error": f"gbr_dl_mbps must equal the directive's target_thp_mbps "
+                                f"({target:g}); got {gbr}", "guardrail": True}
+                if GUARDRAILS_ENABLED:
+                    return err
+                print(f"[cn-nssmf] guardrails disabled (ablation) — would have rejected "
+                      f"configure_qos({params}): {err['error']}")
+        return dispatch(name, params)
+    return pinned
+
+
 def _run_directive(action: str, intent_id: int, sst: int,
                    target_thp_mbps: float | None = None,
                    window_end: str | None = None) -> dict:
     """Build a directive dict and drive the ReAct loop for it — the same
     body the old `POST /directive` handler had, now reached over MCP."""
     directive: dict = {"intent_id": intent_id, "action": action, "sst": sst}
+    if action == "apply_qos" and target_thp_mbps is None:
+        # D14: the orchestrator's model may omit the target (seen live); the
+        # recorded intent is the source of truth, so the core never has to guess
+        target_thp_mbps = _intent_target(intent_id)
     if target_thp_mbps is not None:
         directive["target_thp_mbps"] = target_thp_mbps
     if window_end is not None:
@@ -118,6 +155,8 @@ def _run_directive(action: str, intent_id: int, sst: int,
         "Carry it out and report the SLA status."
     )
     tools, dispatch = scoped_tools(TOOL_SCHEMAS, dispatch_tool, DIRECTIVE_TOOLS[action])
+    if action == "apply_qos" and target_thp_mbps is not None:
+        dispatch = _pin_gbr(dispatch, float(target_thp_mbps))
     out = react_loop(SYSTEM_PROMPT, user_msg, tools, dispatch, tag="cn-nssmf")
     return {
         "agent": "cn-nssmf",
