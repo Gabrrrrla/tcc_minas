@@ -14,7 +14,8 @@
 #   prometheus/*.json     DL/UL throughput per slice TUN (query_range, 2 s step)
 #   gnb/                  rendered gNB config, its template and the gNB stdout
 #   probe/                the newest enforcement-probe JSONL(s) in the range
-#   ue/                   EMPTY: copy the UEs' iperf logs here yourself
+#   ue/                   traffic logs written by scripts/ue_traffic.py in the range
+#                         (phones as iperf3 servers); copy phone-side logs here by hand
 #   notes.md              template for what you saw (fill it in!)
 
 set -u
@@ -102,19 +103,27 @@ for f in agents/benchmark/results/enforcement-probe_*.jsonl agents/benchmark/res
 done
 [ "$n" -eq 0 ] && miss "no probe JSONL written in the range"
 
+echo "-- UE traffic (scripts/ue_traffic.py)"
+n=0
+for d in lab-data/ue-traffic/*/; do
+  [ -d "$d" ] || continue
+  [ "$(stat -c %Y "$d")" -ge "$START" ] && cp -r "$d" "$OUT/ue/" && ok "ue/$(basename "$d")" && n=$((n + 1))
+done
+[ "$n" -eq 0 ] && miss "no ue_traffic run in the range (phone-side logs: copy them into ue/ yourself)"
+
 cat > "$OUT/notes.md" <<EOF
 # ${LABEL} — $(date '+%Y-%m-%d %H:%M')
 
 - Experimento (E0/E1/E2/E3/E4):
-- UEs usadas (qual SIM/IMSI, qual fatia, comando iperf):
+- UEs usadas (qual SIM/IMSI, qual fatia, IP) e comando do ue_traffic.py:
 - Alvo da intenção / janela:
 - UPF_SHAPING:
 - Vazão antes / durante / depois (o que viu no terminal):
 - Restart do gNB: quanto tempo? as UEs voltaram sozinhas? quanto tempo sem tráfego?
 - Algo estranho (erros, UE caiu, gNB não subiu, etc.):
-- Arquivos das UEs copiados para ue/ ? (s/n)
+- ue/ tem a pasta do ue_traffic.py desta repetição? (s/n)
 EOF
 ok "notes.md (preencha agora, enquanto lembra)"
 
 echo
-echo "next: copy the UEs' iperf logs into $OUT/ue/ and fill in $OUT/notes.md"
+echo "next: check $OUT/ue/ and fill in $OUT/notes.md"

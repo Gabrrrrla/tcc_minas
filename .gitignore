@@ -37,3 +37,6 @@ lab-data/
 # lab: configs do gNB do Miguel (hardware do lab) e SIMs reais
 gnb_ru_liteon*.yml
 srsran/gnb.lab.yaml
+
+# lab: credenciais reais dos chips (scripts/provision.lab.js carrega)
+scripts/sims.lab.js
