@@ -44,9 +44,14 @@ if pgrep -fa 'open5gs-(amf|smf|upf|nrf)d' >/dev/null 2>&1; then
 else pass "no native Open5GS processes"; fi
 
 echo "== addressing (docker-compose.yml uses 10.11.0.0/24; UEs 10.45.0.0/16, 10.46.0.0/16)"
-for net in 10.11.0. 10.45. 10.46.; do
+clash=$(ip -o addr show 2>/dev/null | grep -v 'br-' | grep " inet 10.11.0." || true)
+if [ -n "$clash" ]; then fail "10.11.0.x already used on the host: $(echo "$clash" | awk '{print $2, $4}' | head -2 | xargs)"
+else pass "10.11.0.x not used by a host interface"; fi
+# The UE pools live only inside the UPF container (own netns, NAT to 10.11.0.22),
+# so a host ogstun left by a stopped native Open5GS does not clash.
+for net in 10.45. 10.46.; do
   clash=$(ip -o addr show 2>/dev/null | grep -v 'br-' | grep " inet ${net}" || true)
-  if [ -n "$clash" ]; then fail "${net}x already used on the host: $(echo "$clash" | awk '{print $2, $4}' | head -2 | xargs)"
+  if [ -n "$clash" ]; then warn "${net}x on a host interface ($(echo "$clash" | awk '{print $2}' | head -1)): fine while the native Open5GS is stopped — the MINAS UPF NATs UE traffic inside its container"
   else pass "${net}x not used by a host interface"; fi
 done
 
@@ -66,7 +71,11 @@ if curl -sf -m 5 "${OLLAMA_URL}/api/tags" -o /tmp/minas_ollama_tags.json; then
       if ss -ltn 2>/dev/null | grep -q '127.0.0.1:11434'; then
         fail "Ollama on this host listens on 127.0.0.1 only — containers can't reach it. Set OLLAMA_HOST=0.0.0.0 (systemctl edit ollama) and restart"
       fi
-      warn "Ollama on the gNB host: CPU inference competes with srsRAN's real-time threads (fronthaul late/underflow). Prefer a GPU or another machine (OLLAMA_URL), or pin it off the gNB cores"
+      if command -v nvidia-smi >/dev/null && nvidia-smi -L >/dev/null 2>&1; then
+        pass "GPU for Ollama: $(nvidia-smi -L | head -1)"
+      else
+        warn "Ollama on the gNB host without a GPU: CPU inference competes with the gNB's real-time threads. Prefer another machine (OLLAMA_URL), or pin it off the gNB cores"
+      fi
       ;;
   esac
 else
@@ -75,9 +84,18 @@ fi
 
 echo "== real-time / DPDK (gNB)"
 if grep -qE 'isolcpus|nohz_full' /proc/cmdline; then pass "isolated cores: $(grep -oE '(isolcpus|nohz_full)=[^ ]+' /proc/cmdline | xargs)"
-else warn "no isolcpus/nohz_full on the kernel cmdline — keep containers/Ollama off the gNB cores (cpuset)"; fi
+else warn "no isolcpus/nohz_full on the kernel cmdline — after compose up, keep the containers off the gNB cores: docker update --cpuset-cpus <free cpus, e.g. 18-31> \$(docker ps -q)"; fi
 hp=$(awk '/HugePages_Total/{print $2}' /proc/meminfo 2>/dev/null)
 [ "${hp:-0}" -gt 0 ] && pass "hugepages: ${hp}" || warn "no hugepages configured (DPDK fronthaul usually needs them)"
+
+echo "== gnb_slicer.py (runs with sudo python3, next to the gNB)"
+if sudo -n python3 -c 'import flask, yaml' 2>/dev/null; then pass "root's python3 has flask + pyyaml"
+elif sudo -n true 2>/dev/null; then fail "root's python3 lacks flask/pyyaml — sudo apt install -y python3-flask python3-yaml"
+else warn "could not check root's python3 without a password — run: sudo python3 -c 'import flask, yaml'"; fi
+TPL=${GNB_TEMPLATE:-srsran/gnb.lab.yaml}
+if [ -f "$TPL" ]; then
+  grep -q '10.11.0.20' "$TPL" && pass "$TPL points the gNB at the MINAS AMF (10.11.0.20)"     || fail "$TPL does not mention 10.11.0.20 — set cu_cp.amf.addr: 10.11.0.20, bind_addr: 10.11.0.1"
+else warn "gNB template $TPL not found (LAB guide, P2)"; fi
 
 echo "== time (enforcement windows are wall-clock)"
 tz=$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null)

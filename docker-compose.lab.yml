@@ -10,6 +10,21 @@
 # Ollama reachability, ports).
 
 services:
+  # The lab gNB announces S-NSSAIs WITH SD (SST 1 / SD 111111, SST 2 / SD
+  # 222222): AMF, NSSF and the subscribers must use the same ones. The *.lab
+  # files are copies of the base ones plus the SD, so the benchmark is untouched.
+  amf:
+    volumes:
+      - ./open5gs/amf.lab.yaml:/opt/open5gs/etc/open5gs/amf.yaml
+  nssf:
+    volumes:
+      - ./open5gs/nssf.lab.yaml:/opt/open5gs/etc/open5gs/nssf.yaml
+  provision:
+    entrypoint:
+      - sh
+      - -c
+      - "until mongo --host 10.11.0.2 --eval 'db.runCommand({ping:1})' >/dev/null 2>&1; do echo waiting-for-mongo; sleep 2; done; mongo --nodb /scripts/provision.lab.js"
+
   upf:
     volumes:
       - ./open5gs/upf.lab.yaml:/opt/open5gs/etc/open5gs/upf.yaml

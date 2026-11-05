@@ -44,7 +44,7 @@ echo "== $OUT  ($(iso $START) .. $(iso $END))"
     echo "image[$c]: $(docker inspect -f '{{.Config.Image}} {{.Image}}' "$c" 2>/dev/null)"
   done
   for c in cn-nssmf ran-nssmf orchestrator collector; do
-    echo "env[$c]: $(docker exec "$c" sh -c 'env | grep -E "^(MINAS_MODEL|ENFORCEMENT_MODE|UPF_SHAPING|GNB_SLICER_URL|ENFORCEMENT_TIMEOUT_S|RAG_ENABLED|GUARDRAILS_ENABLED|UC1_ENABLED|SLA_MONITOR_ENABLED|CORE_SOURCE|RAN_SOURCE|OLLAMA_URL)=" | sort | tr "\n" " "' 2>/dev/null)"
+    echo "env[$c]: $(docker exec "$c" sh -c 'env | grep -E "^(MINAS_MODEL|ENFORCEMENT_MODE|UPF_SHAPING|GNB_SLICER_URL|ENFORCEMENT_TIMEOUT_S|RAG_ENABLED|GUARDRAILS_ENABLED|UC1_ENABLED|SLA_MONITOR_ENABLED|CORE_SOURCE|RAN_SOURCE|OLLAMA_URL|RAN_PRB_TOTAL|RAN_MBPS_PER_PRB)=" | sort | tr "\n" " "' 2>/dev/null)"
   done
 } > "$OUT/meta.txt" && ok meta.txt
 [ -f .env ] && cp .env "$OUT/env.txt" && ok env.txt
@@ -86,9 +86,13 @@ for pair in ${SLICE_TUN//,/ }; do
 done
 
 echo "-- gNB (only if this runs on the gNB host)"
-for f in "$GNB_CONFIG_OUT" "${GNB_TEMPLATE:-}" "$GNB_LOG" /tmp/gnb.log; do
+for f in "$GNB_CONFIG_OUT" "${GNB_TEMPLATE:-srsran/gnb.lab.yaml}" "$GNB_LOG"; do
   [ -n "$f" ] && [ -f "$f" ] && cp "$f" "$OUT/gnb/" && ok "gnb/$(basename "$f")"
 done
+# the gNB's own log (all_level: info at 100 MHz) grows fast: keep only its tail
+if [ -f /tmp/gnb.log ]; then
+  tail -c 50M /tmp/gnb.log > "$OUT/gnb/gnb.log.tail" && ok "gnb/gnb.log.tail (last 50 MB of /tmp/gnb.log)"
+fi
 
 echo "-- probe results"
 n=0

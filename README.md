@@ -67,10 +67,13 @@ tcc_minas/
 │   ├── smf.yaml                # DNN internet (10.45.0.0/16) + slice2 (10.46.0.0/16)
 │   ├── upf.yaml                # ogstun + ogstun2, advertise 127.0.0.1
 │   ├── upf.lab.yaml            # igual, advertise 10.11.0.22 (gNB no host, via bridge)
+│   ├── amf.lab.yaml            # lab: S-NSSAI com SD (SST 1/SD 111111, SST 2/SD 222222), como o gNB do lab
+│   ├── nssf.lab.yaml           # lab: mesmas S-NSSAI com SD
 │   └── nrf/scp/ausf/udm/udr/pcf/nssf/bsf.yaml
 │
 ├── srsran/
-│   └── gnb.yaml                # Configuração do gNB (no lab, partir do gnb.yaml do laboratório)
+│   └── gnb.yaml                # Esqueleto do gNB; no lab, o template é o gnb.lab.yaml (não versionado),
+│                               #   feito a partir da config do laboratório
 │
 ├── agents/
 │   ├── schema.sql              # Schema PostgreSQL
@@ -117,6 +120,7 @@ tcc_minas/
 │
 ├── scripts/
 │   ├── provision.js            # Cadastra UE1 (SST=1+2) e UE2 (SST=2) no MongoDB
+│   ├── provision.lab.js        # igual, com o SD do lab (IMSI/K/OPc reais entram só no dia, sem commit)
 │   ├── inspect.js              # Consulta subscriber no MongoDB
 │   ├── lab_preflight.sh        # checagens do host do lab ANTES de subir (SCTP, portas, sub-redes, Ollama, CPU, NTP)
 │   ├── lab_smoke.sh            # teste de fumaça DEPOIS de subir (containers, health, enforcement, Prometheus, KPIs)
@@ -202,9 +206,9 @@ gNB (host) <─N3/GTP-U─> UPF 10.11.0.22:2152       (open5gs/upf.lab.yaml anun
 Resumo (o passo a passo completo, com os experimentos E0–E4, o que salvar e o plano B de cada passo, está em `LAB-2026-11-03.md`):
 
 1. `bash scripts/lab_preflight.sh`: checa o host (SCTP, portas, sub-redes, Ollama, isolamento de CPU, NTP).
-2. `gnb.yaml` do laboratório com `amf.addr 10.11.0.20`, `bind_addr 10.11.0.1`, PLMN/TAC/S-NSSAI iguais a `open5gs/amf.yaml` e aos SIMs; IMSI/K/OPc reais em `scripts/provision.js`.
+2. Template do gNB (`srsran/gnb.lab.yaml`, não versionado) a partir da config do laboratório, com `amf.addr 10.11.0.20`, `bind_addr 10.11.0.1`, N3 também em `10.11.0.1` e PLMN/TAC/S-NSSAI (com SD) iguais a `open5gs/amf.lab.yaml`. IMSI/K/OPc reais em `scripts/provision.lab.js`, **só localmente** (o repo é público).
 3. No host do gNB, subir o `gnb_slicer.py` (ver [Enforcement real](#enforcement-real)).
-4. `.env`: `ENFORCEMENT_MODE=real` (padrão do overlay), `GNB_SLICER_URL`, `ENFORCEMENT_TIMEOUT_S` maior que o tempo de restart do gNB, e `RAN_PRB_TOTAL`/`RAN_MBPS_PER_PRB` medidos na célula.
+4. `.env`: `ENFORCEMENT_MODE=real` (padrão do overlay), `GNB_SLICER_URL`, `ENFORCEMENT_TIMEOUT_S` maior que o tempo de restart do gNB, e `RAN_PRB_TOTAL`/`RAN_MBPS_PER_PRB` da célula (no lab: 100 MHz, SCS 30 kHz = 273 PRB; Mbps/PRB medido).
 5. Subir:
    ```bash
    docker compose build
@@ -215,7 +219,7 @@ Resumo (o passo a passo completo, com os experimentos E0–E4, o que salvar e o 
 7. `SHAPER_WRITE_TEST=1 bash scripts/lab_smoke.sh` → 0 FAIL.
 8. Depois de cada experimento: `bash scripts/lab_collect.sh <label> [minutos]`.
 
-O LLM deve rodar, de preferência, fora do servidor do gNB (`OLLAMA_URL`): inferência em CPU compete com as threads de tempo real do gNB.
+O LLM não deve disputar CPU com o gNB: em GPU, ou em outra máquina (`OLLAMA_URL`). Sem `isolcpus` nos núcleos do gNB, prenda os containers nos outros depois de subir: `docker update --cpuset-cpus <núcleos livres> $(docker ps -q)`.
 
 ---
 
@@ -369,14 +373,15 @@ Corpus de 35 trechos curados (TS 23.501, TS 23.288, TS 28.312, TS 38.300, TS 28.
 Subir o slicer no host do gNB:
 
 ```bash
-pip install flask pyyaml
-sudo GNB_TEMPLATE=<gnb.yaml do lab> \
-     GNB_RESTART_CMD="<comando que sobe o gNB com -c /tmp/gnb.minas.yaml>" \
+sudo apt install -y python3-flask python3-yaml     # para o python3 do root
+sudo GNB_TEMPLATE=srsran/gnb.lab.yaml \
+     GNB_DIR=<pasta do gnb> GNB_BIN=./gnb GNB_CPUS=<núcleos do gNB> \
+     GNB_EXTRA_ARGS="-c <outros yml>" \
      GNB_READY_PATTERN="<linha de pronto>" GNB_READY_TIMEOUT=120 \
-     python3 agents/enforcers/gnb_slicer.py
+     python3 agents/enforcers/gnb_slicer.py 2>&1 | tee gnb_slicer.log
 ```
 
-Ao iniciar, ele avisa se o template não tem a lista de fatias em `GNB_SLICING_PATH` (default `cell_cfg.slicing`) ou se os SST/SD não batem. Variáveis dos agentes: `GNB_SLICER_URL` (default `http://10.11.0.1:8010`), `ENFORCEMENT_TIMEOUT_S` (default 90, deve cobrir o restart do gNB), `UPF_SHAPING` (default `true`).
+O `scripts/gnb_restart.sh` (padrão de `GNB_RESTART_CMD`) roda `taskset -c $GNB_CPUS $GNB_BIN -c /tmp/gnb.minas.yaml $GNB_EXTRA_ARGS` a partir de `GNB_DIR`. O slicer mantém as entradas de fatia do template (inclusive o SD de cada uma) e só preenche o `sched_cfg`; `GNB_SLICE_SD` força um SD único e normalmente fica vazio. Ao iniciar, ele avisa se o template não tem a lista de fatias em `GNB_SLICING_PATH` (default `cell_cfg.slicing`) ou se os SST não batem. Variáveis dos agentes: `GNB_SLICER_URL` (default `http://10.11.0.1:8010`), `ENFORCEMENT_TIMEOUT_S` (default 90, deve cobrir o restart do gNB), `UPF_SHAPING` (default `true`).
 
 ---
 

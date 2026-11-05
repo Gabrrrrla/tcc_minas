@@ -33,3 +33,7 @@ tcc2/
 
 # lab runs (scripts/lab_collect.sh)
 lab-data/
+
+# lab: configs do gNB do Miguel (hardware do lab) e SIMs reais
+gnb_ru_liteon*.yml
+srsran/gnb.lab.yaml

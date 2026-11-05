@@ -1,0 +1,28 @@
+# LAB: igual a nssf.yaml, com o SD por fatia que o gNB do lab anuncia.
+logger:
+  file: /opt/open5gs/var/log/open5gs/nssf.log
+
+sbi:
+  server:
+    no_tls: true
+  client:
+    no_tls: true
+
+nssf:
+  sbi:
+    - dev: eth0
+      port: 7777
+  nsi:
+    - uri: http://nrf:7777
+      s_nssai:
+        sst: 1
+        sd: 111111
+    - uri: http://nrf:7777
+      s_nssai:
+        sst: 2
+        sd: 222222
+
+scp:
+  sbi:
+    - name: scp
+      port: 7777

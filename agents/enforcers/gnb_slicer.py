@@ -28,7 +28,8 @@ Environment:
     GNB_SLICING_PATH    where the slice list lives in the YAML, dotted
                         (default "cell_cfg.slicing"; check against the srsRAN
                         version in the lab — older ones use top-level "slicing")
-    GNB_SLICE_SD        SD to write per slice, or empty to omit (default empty)
+    GNB_SLICE_SD        SD forced on EVERY slice (default empty: keep the
+                        template's own SD per slice, e.g. 0x111111 / 0x222222)
     GNB_RESTART_CMD     shell command that (re)starts the gNB from GNB_CONFIG_OUT
                         (default: scripts/gnb_restart.sh next to this repo)
     GNB_LOG             gNB stdout log the restart writes to (default /tmp/gnb.stdout)
@@ -80,13 +81,18 @@ def _render(ratios: dict[int, dict]) -> None:
     node = cfg
     for key in SLICING_PATH[:-1]:
         node = node.setdefault(key, {})
-    entries = []
+    # Keep the operator's slice entries (their SD per slice and any other key)
+    # and only set sched_cfg; slices missing from the template are appended.
+    old = node.get(SLICING_PATH[-1])
+    entries = [dict(e) for e in old if isinstance(e, dict)] if isinstance(old, list) else []
     for sst, r in ratios.items():
-        e: dict = {"sst": sst}
+        e = next((x for x in entries if x.get("sst") == sst), None)
+        if e is None:
+            e = {"sst": sst}
+            entries.append(e)
         if SLICE_SD:
             e["sd"] = int(SLICE_SD, 0)
-        e["sched_cfg"] = dict(r)
-        entries.append(e)
+        e["sched_cfg"] = {**(e.get("sched_cfg") or {}), **r}
     node[SLICING_PATH[-1]] = entries
     tmp = CONFIG_OUT + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -173,9 +179,12 @@ def _check_template() -> None:
         print(f"[gnb-slicer] WARNING: template SSTs {sorted({s for s, _ in found})} != GNB_SLICES "
               f"{SLICES}", flush=True)
     sds = {sd for _, sd in found if sd is not None}
-    if sds and not SLICE_SD:
-        print(f"[gnb-slicer] WARNING: the template uses SD {sds} but GNB_SLICE_SD is empty; "
-              f"the rendered slices would lose it", flush=True)
+    if sds and SLICE_SD:
+        print(f"[gnb-slicer] WARNING: the template has its own SDs {sds}, but GNB_SLICE_SD="
+              f"{SLICE_SD} overrides them on every slice; leave GNB_SLICE_SD empty to keep them",
+              flush=True)
+    elif sds:
+        print(f"[gnb-slicer] keeping the template's SD per slice: {sds}", flush=True)
 
 
 if __name__ == "__main__":
