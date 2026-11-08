@@ -12,6 +12,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Pre-download the RAG embedding model into the image at build time (cached
 # as a Docker layer) so containers never need network access at runtime to
 # fetch it — same "no external API dependency at runtime" posture as Ollama.
+# HF_HUB_DISABLE_XET: plain HTTPS download instead of the Xet backend
+# (cas-bridge.xethub.hf.co), which the UNISINOS network blocks: with it the
+# build hangs forever. HF_HUB_DOWNLOAD_TIMEOUT makes a blocked download fail
+# instead of waiting.
+ENV HF_HUB_DISABLE_XET=1 \
+    HF_HUB_DOWNLOAD_TIMEOUT=60
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-en-v1.5')"
 
 COPY agents/ ./agents/

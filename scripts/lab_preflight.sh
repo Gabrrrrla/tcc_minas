@@ -33,11 +33,13 @@ fi
 echo "== N2 (SCTP) / N3 (GTP-U)"
 if lsmod 2>/dev/null | grep -q '^sctp'; then pass "sctp kernel module loaded"
 else warn "sctp module not loaded — run: sudo modprobe sctp  (NGAP needs it)"; fi
+# The lab overlay does not publish 38412/2152 on the host (the gNB reaches the
+# AMF/UPF on the bridge), so these being in use is fine — just informative.
 if ss -A sctp -ln 2>/dev/null | grep -q ':38412'; then
-  fail "something already listens on SCTP 38412 (another AMF?) — $(ss -A sctp -lnp 2>/dev/null | grep 38412 | head -1)"
+  warn "SCTP 38412 in use on the host — fine with docker-compose.lab.yml (no publishing): $(ss -A sctp -lnp 2>/dev/null | grep 38412 | head -1)"
 else pass "SCTP 38412 free"; fi
 if ss -lun 2>/dev/null | grep -q ':2152 '; then
-  fail "UDP 2152 (GTP-U) already in use — another UPF? $(ss -lunp 2>/dev/null | grep ':2152 ' | head -1)"
+  warn "UDP 2152 in use on the host — fine with docker-compose.lab.yml (no publishing): $(ss -lunp 2>/dev/null | grep ':2152 ' | head -1)"
 else pass "UDP 2152 free"; fi
 if pgrep -fa 'open5gs-(amf|smf|upf|nrf)d' >/dev/null 2>&1; then
   warn "native Open5GS processes running: $(pgrep -fa 'open5gs-(amf|smf|upf|nrf)d' | awk '{print $2}' | xargs) — stop them or they clash with the containers"
@@ -56,21 +58,32 @@ for net in 10.45. 10.46.; do
 done
 
 echo "== TCP ports published by the stack"
-for p in 3000 3001 5432 8000 8001 8002 8080 9090; do
+for p in 3000 3001 5432 8000 8002 8080 9090; do   # 8001: not published in the lab overlay
   if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${p}$"; then warn "TCP ${p} already in use — compose publish will fail for that service"
   else pass "TCP ${p} free"; fi
 done
 
-echo "== LLM (Ollama) at ${OLLAMA_URL}"
-if curl -sf -m 5 "${OLLAMA_URL}/api/tags" -o /tmp/minas_ollama_tags.json; then
+# OLLAMA_URL=http://10.11.0.1:11434 is the ollama-proxy relay (docker-compose.lab.yml),
+# which only exists after compose up: before that, check the local Ollama.
+OLLAMA_CHECK=${OLLAMA_URL}
+case "${OLLAMA_URL}" in *10.11.0.1*) OLLAMA_CHECK=http://localhost:11434 ;; esac
+echo "== LLM (Ollama) at ${OLLAMA_CHECK} (agents use ${OLLAMA_URL})"
+if curl -sf -m 5 "${OLLAMA_CHECK}/api/tags" -o /tmp/minas_ollama_tags.json; then
   pass "Ollama reachable from the host"
   grep -q "\"${MINAS_MODEL}\"" /tmp/minas_ollama_tags.json && pass "model ${MINAS_MODEL} present" \
     || fail "model ${MINAS_MODEL} not pulled — ollama pull ${MINAS_MODEL}"
   case "${OLLAMA_URL}" in
-    *localhost*|*127.0.0.1*|*host.docker.internal*)
-      if ss -ltn 2>/dev/null | grep -q '127.0.0.1:11434'; then
-        fail "Ollama on this host listens on 127.0.0.1 only — containers can't reach it. Set OLLAMA_HOST=0.0.0.0 (systemctl edit ollama) and restart"
-      fi
+    *localhost*|*127.0.0.1*|*host.docker.internal*|*10.11.0.1*)
+      case "${OLLAMA_URL}" in
+        *10.11.0.1*)
+          if ss -ltn 2>/dev/null | grep -qE '(0\.0\.0\.0|\*|\[::\]):11434'; then
+            fail "Ollama listens on all interfaces: the ollama-proxy relay cannot bind 10.11.0.1:11434 (and Ollama is exposed). Put it back on 127.0.0.1"
+          else pass "Ollama not on 0.0.0.0; containers reach it via ollama-proxy at 10.11.0.1:11434 (after compose up)"; fi ;;
+        *)
+          if ss -ltn 2>/dev/null | grep -q '127.0.0.1:11434'; then
+            fail "Ollama on this host listens on 127.0.0.1 only — containers can't reach ${OLLAMA_URL}. In the lab use OLLAMA_URL=http://10.11.0.1:11434 (ollama-proxy)"
+          fi ;;
+      esac
       if command -v nvidia-smi >/dev/null && nvidia-smi -L >/dev/null 2>&1; then
         pass "GPU for Ollama: $(nvidia-smi -L | head -1)"
       else

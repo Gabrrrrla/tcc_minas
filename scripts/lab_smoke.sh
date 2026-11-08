@@ -38,8 +38,9 @@ for c in postgres nwdaf cn-nssmf ran-nssmf orchestrator collector upf upf-netdev
 done
 
 echo "== agents"
-for p in 8000 8001 8002 8080; do
-  curl -sf -m 5 "http://localhost:$p/health" >/dev/null && pass "health :$p" || fail "no health on :$p"
+# CN-NSSMF by its bridge IP: the lab overlay does not publish :8001 (in use on the server)
+for u in localhost:8000 10.11.0.60:8001 localhost:8002 localhost:8080; do
+  curl -sf -m 5 "http://$u/health" >/dev/null && pass "health $u" || fail "no health on $u"
 done
 docker exec cn-nssmf sh -c 'echo $ENFORCEMENT_MODE $UPF_SHAPING' | grep -q '^real' \
   && pass "cn-nssmf ENFORCEMENT_MODE=real (UPF_SHAPING=$(docker exec cn-nssmf sh -c 'echo $UPF_SHAPING'))" \
@@ -47,7 +48,7 @@ docker exec cn-nssmf sh -c 'echo $ENFORCEMENT_MODE $UPF_SHAPING' | grep -q '^rea
 docker exec ran-nssmf sh -c 'echo $ENFORCEMENT_MODE' | grep -q '^real' \
   && pass "ran-nssmf ENFORCEMENT_MODE=real" || warn "ran-nssmf is NOT in ENFORCEMENT_MODE=real"
 docker exec ran-nssmf python -c "import os,urllib.request,json; print(json.load(urllib.request.urlopen(os.environ.get('OLLAMA_URL','http://host.docker.internal:11434')+'/api/tags',timeout=5))['models'][0]['name'])" >/dev/null 2>&1 \
-  && pass "Ollama reachable from the containers" || fail "Ollama NOT reachable from the containers (OLLAMA_URL / OLLAMA_HOST=0.0.0.0)"
+  && pass "Ollama reachable from the containers" || fail "Ollama NOT reachable from the containers (OLLAMA_URL=http://10.11.0.1:11434? docker logs ollama-proxy; firewall accepting 10.11.0.0/24?)"
 
 echo "== enforcement points"
 if out=$(docker exec cn-nssmf python -c "import requests;r=requests.get('http://upf:9300/slices',timeout=5).json();print({k:(v['dev'],v['rate'] or 'no limit') for k,v in r.items()}, 'NODEV' if any('Cannot find device' in v['raw'] for v in r.values()) else '')" 2>&1); then

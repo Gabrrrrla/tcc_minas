@@ -17,11 +17,22 @@ GNB_BIN="${GNB_BIN:-gnb}"
 CFG="${GNB_CONFIG_OUT:?}"
 LOG="${GNB_LOG:-/tmp/gnb.stdout}"
 PROC="$(basename "$GNB_BIN")"
+PIDFILE="${GNB_PIDFILE:-/tmp/gnb.minas.pid}"
 
+# Stop only the gNB this script started (pidfile), never someone else's: on
+# the UNISINOS server the lab's own gNB runs as a k3s pod, and killing it
+# would just make k3s restart it and fight us for the RU.
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  pid=$(cat "$PIDFILE")
+  kill -INT "$pid" || true
+  for _ in $(seq 1 40); do kill -0 "$pid" 2>/dev/null || break; sleep 0.25; done
+  kill -KILL "$pid" 2>/dev/null || true
+fi
+rm -f "$PIDFILE"
 if pgrep -x "$PROC" >/dev/null; then
-  pkill -INT -x "$PROC" || true
-  for _ in $(seq 1 40); do pgrep -x "$PROC" >/dev/null || break; sleep 0.25; done
-  pkill -KILL -x "$PROC" 2>/dev/null || true
+  echo "gnb_restart.sh: another $PROC is running (PID $(pgrep -x "$PROC" | xargs)), not started by MINAS." >&2
+  echo "Stop the lab's gNB first (UNISINOS: ran/ocudu/gnb.sh stop)." >&2
+  exit 1
 fi
 [ -n "${GNB_DIR:-}" ] && cd "$GNB_DIR"
 PIN=()
@@ -29,4 +40,5 @@ PIN=()
 : > "$LOG"   # (gnb_slicer.py also empties it before calling this)
 # shellcheck disable=SC2086  # GNB_EXTRA_ARGS is a word list on purpose
 nohup "${PIN[@]}" "$GNB_BIN" -c "$CFG" ${GNB_EXTRA_ARGS:-} > "$LOG" 2>&1 < /dev/null &
+echo $! > "$PIDFILE"   # taskset execs the gnb, so $! is the gnb's own PID
 disown

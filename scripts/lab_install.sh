@@ -48,7 +48,7 @@ setenv() {  # setenv KEY VALUE: troca a linha KEY=... ou acrescenta
   if grep -q "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else echo "$1=$2" >> .env; fi
 }
 setenv MINAS_MODEL "$MODEL"
-setenv OLLAMA_URL "http://host.docker.internal:11434"
+setenv OLLAMA_URL "http://10.11.0.1:11434"   # relay ollama-proxy (docker-compose.lab.yml); Ollama fica em 127.0.0.1
 setenv MINAS_TZ "America/Sao_Paulo"
 setenv CORE_SOURCE prometheus
 setenv GNB_SLICER_URL "http://10.11.0.1:8010"
@@ -68,12 +68,10 @@ if ! curl -sf -m 5 localhost:11434/api/tags >/dev/null; then
     # systemd e usa a GPU NVIDIA se o driver estiver instalado.
     echo "  Ollama não encontrado: instalando (instalador oficial)"
     if curl -fsSL https://ollama.com/install.sh | sh; then
-      # instalado por nós: já deixa ouvindo em todas as interfaces (os agentes rodam em container)
-      sudo mkdir -p /etc/systemd/system/ollama.service.d
-      printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\n' | sudo tee /etc/systemd/system/ollama.service.d/minas.conf >/dev/null
-      sudo systemctl daemon-reload && sudo systemctl enable --now ollama >/dev/null 2>&1
-      sudo systemctl restart ollama
-      ok "Ollama instalado como serviço, ouvindo em 0.0.0.0:11434"
+      # fica em 127.0.0.1 (o padrão): 0.0.0.0 exporia o Ollama no IP público.
+      # Os containers chegam nele pelo relay ollama-proxy (10.11.0.1:11434).
+      sudo systemctl enable --now ollama >/dev/null 2>&1
+      ok "Ollama instalado como serviço (127.0.0.1:11434)"
     else fail "instalação do Ollama (curl -fsSL https://ollama.com/install.sh | sh)"; fi
   fi
   for _ in $(seq 1 20); do curl -sf -m 2 localhost:11434/api/tags >/dev/null && break; sleep 1; done
@@ -82,24 +80,28 @@ if curl -sf -m 5 localhost:11434/api/tags -o /tmp/minas_tags.json; then
   ok "Ollama responde em localhost:11434"
   if grep -q "\"$MODEL\"" /tmp/minas_tags.json; then ok "$MODEL já baixado"
   else
-    # pela API, para funcionar também com o Ollama em container (sem o comando ollama no host)
     echo "  baixando $MODEL (~4,7 GB)..."
-    if curl -sf -m 3600 localhost:11434/api/pull -d "{\"model\":\"$MODEL\",\"stream\":false}" | grep -q '"success"'; then ok "$MODEL baixado"
-    else fail "não consegui baixar $MODEL (tente: ollama pull $MODEL)"; fi
+    if command -v ollama >/dev/null; then
+      ollama pull "$MODEL" 2>&1 | tail -3 | sed 's/^/    /'
+    else  # Ollama em container, sem o comando no host: pela API, mostrando o erro
+      curl -s -m 3600 localhost:11434/api/pull -d "{\"model\":\"$MODEL\",\"stream\":false}" | sed 's/^/    /'; echo
+    fi
+    if curl -sf -m 5 localhost:11434/api/tags | grep -q "\"$MODEL\""; then ok "$MODEL baixado"
+    else
+      fail "não consegui baixar $MODEL (erro acima). Se a rede bloqueia o registry do Ollama, copie o modelo de outra máquina: ver LAB-2026-11-03.md"
+      echo "    teste: curl -sI https://registry.ollama.ai/v2/library/qwen2.5/manifests/7b | head -1"
+    fi
   fi
   if command -v nvidia-smi >/dev/null && nvidia-smi -L >/dev/null 2>&1; then ok "GPU: $(nvidia-smi -L | head -1)"
   else warn "sem nvidia-smi: o Ollama vai rodar em CPU, competindo com o gNB"; fi
-  if ss -ltn 2>/dev/null | grep -q '127.0.0.1:11434'; then
-    fail "Ollama ouve só em 127.0.0.1: os agentes (em container) não alcançam. sudo systemctl edit ollama -> [Service] Environment=\"OLLAMA_HOST=0.0.0.0\" ; sudo systemctl restart ollama"
-  fi
-  if $DOCKER run --rm --add-host host.docker.internal:host-gateway curlimages/curl:8.10.1 -sf -m 5 http://host.docker.internal:11434/api/tags >/dev/null 2>&1; then
-    ok "um container alcança o Ollama (host.docker.internal:11434)"
-  else fail "um container NÃO alcança o Ollama em host.docker.internal:11434 (OLLAMA_HOST=0.0.0.0? firewall?)"; fi
+  if ss -ltn 2>/dev/null | grep -qE '(0\.0\.0\.0|\*|\[::\]):11434'; then
+    warn "Ollama ouve em todas as interfaces (exposto no IP público, e o relay ollama-proxy não consegue usar 10.11.0.1:11434). Volte para 127.0.0.1"
+  else ok "Ollama só em 127.0.0.1; os containers usam o relay ollama-proxy (10.11.0.1:11434), testado pelo lab_smoke.sh"; fi
 else
   fail "Ollama não responde em localhost:11434 (está nesta máquina? está rodando?)"
 fi
 
-echo "== 7. Imagens Docker (demora na primeira vez)"
+echo "== 7. Imagens Docker (demora na primeira vez; o agents/Dockerfile usa HF_HUB_DISABLE_XET=1, a rede da Unisinos bloqueia o Xet)"
 CF="-f docker-compose.yml -f docker-compose.lab.yml"
 $DOCKER compose $CF pull --ignore-pull-failures -q >/dev/null 2>&1; ok "imagens prontas baixadas (Open5GS, Mongo, Postgres, Prometheus, iperf3...)"
 if $DOCKER compose build -q && $DOCKER compose $CF build -q upf-shaper; then ok "imagens do MINAS construídas (minas-agent, minas-enforcer)"

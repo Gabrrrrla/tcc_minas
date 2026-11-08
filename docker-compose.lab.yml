@@ -10,10 +10,28 @@
 # Ollama reachability, ports).
 
 services:
+  # No host port publishing for N2/N3/CN-NSSMF in the lab: the innovaserver
+  # already uses 8001, 2152/udp and 38412/sctp (Miguel's network), and the gNB
+  # reaches the AMF/UPF straight over the bridge (10.11.0.20 / 10.11.0.22).
+  # From the host, the CN-NSSMF answers at 10.11.0.60:8001.
+  # (see `ports: !reset []` under amf, upf and cn-nssmf below)
+
+  # Ollama stays on 127.0.0.1 (0.0.0.0 would expose it on the server's public
+  # IP). This relay listens only on the minas-net gateway (10.11.0.1), which
+  # just the MINAS containers reach: OLLAMA_URL=http://10.11.0.1:11434.
+  # Host firewall must accept 10.11.0.0/24 (also needed for the slicer, :8010).
+  ollama-proxy:
+    image: alpine/socat:1.8.0.0
+    container_name: ollama-proxy
+    network_mode: host
+    command: ["TCP-LISTEN:11434,bind=10.11.0.1,fork,reuseaddr", "TCP:127.0.0.1:11434"]
+    restart: unless-stopped   # retries until the minas-net bridge (10.11.0.1) exists
+
   # The lab gNB announces S-NSSAIs WITH SD (SST 1 / SD 111111, SST 2 / SD
   # 222222): AMF, NSSF and the subscribers must use the same ones. The *.lab
   # files are copies of the base ones plus the SD, so the benchmark is untouched.
   amf:
+    ports: !reset []
     volumes:
       - ./open5gs/amf.lab.yaml:/opt/open5gs/etc/open5gs/amf.yaml
   nssf:
@@ -26,6 +44,7 @@ services:
       - "until mongo --host 10.11.0.2 --eval 'db.runCommand({ping:1})' >/dev/null 2>&1; do echo waiting-for-mongo; sleep 2; done; mongo --nodb /scripts/provision.lab.js"
 
   upf:
+    ports: !reset []
     volumes:
       - ./open5gs/upf.lab.yaml:/opt/open5gs/etc/open5gs/upf.yaml
     # Same TUN setup as the base file, plus NAT so UE traffic can leave the
@@ -81,6 +100,7 @@ services:
   # reached through the minas-net bridge gateway. Start it before the agents:
   #   sudo GNB_TEMPLATE=<gnb.yaml do lab> python3 agents/enforcers/gnb_slicer.py
   cn-nssmf:
+    ports: !reset []
     environment:
       ENFORCEMENT_MODE: "${ENFORCEMENT_MODE:-real}"
       UPF_SHAPER_URL: http://upf:9300
