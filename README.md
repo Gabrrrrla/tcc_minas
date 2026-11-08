@@ -477,3 +477,62 @@ Schema em `agents/schema.sql`:
 ```bash
 for f in agents/migrations/*.sql; do docker exec -i postgres psql -U minas -d minas < "$f"; done
 ```
+
+---
+
+## Apêndice
+
+Material complementar do TCC II que não coube no texto.
+
+### A. Defeitos encontrados durante a validação
+
+Construir e rodar o sistema expôs dezesseis defeitos. Os defeitos D1 a D11 foram corrigidos antes das medições do benchmark. Os defeitos D12 a D16 foram encontrados depois, pelos probes e pelo ensaio do laboratório. O D12 não foi corrigido de propósito, para não mudar o sistema que o benchmark mediu.
+
+| ID | Defeito | Consequência |
+|---|---|---|
+| D1 | O histórico do loop *ReAct* omitia os registros das chamadas de ferramenta do próprio modelo | Chamadas repetidas, ou ações narradas em texto em vez de executadas |
+| D2 | Uma conexão de banco compartilhada por threads concorrentes | O scheduler travava sem erro e as reversões paravam |
+| D3 | O medidor de uso de PRB era somado numa janela deslizante | A estimativa de capacidade caía a zero e toda alocação virava `degraded` |
+| D4 | Sessões de banco sem autocommit | Timestamps congelados, e uma sessão abortada travava o scheduler |
+| D5 | A reversão era aceita como feita quando nenhum erro voltava | Intenções marcadas `reverted` sem nada revertido |
+| D6 | A admissão da RAN ignorava as reservas das outras fatias | Duas fatias podiam receber a célula inteira cada uma |
+| D7 | Um fallback de status marcava `applied` sem olhar a resposta da RAN | Cumprimento superestimado para alvos inviáveis |
+| D8 | Timestamps sem fuso lidos como UTC | Janelas deslocadas em três horas |
+| D9 | Diretivas só de leitura ofereciam todas as ferramentas | A política do core era alterada ao responder uma consulta de carga |
+| D10 | Contexto padrão de 4.096 tokens e nenhum limite de geração | 2,8% das chamadas de inferência truncadas, e timeouts |
+| D11 | Uma janela de exemplo no cabeçalho de data do prompt | A janela era copiada para intenções que não tinham janela |
+| D12 | O resultado de um domínio era lido da última chamada de configuração, mesmo rejeitada | Uma ativação correta marcada `failed` e revertida (não corrigido) |
+| D13 | O scheduler falhava uma intenção com a janela já fechada sem fazer rollback | Política do core em vigor indefinidamente quando a RAN ficava fora a janela toda |
+| D14 | O GBR gravado pelo core não era conferido contra o alvo da intenção | Taxa escolhida pelo modelo do core quando a diretiva omitia o alvo |
+| D15 | O status final de uma intenção imediata vinha da resposta do modelo | Intenção `applied` com um domínio falho ou nunca acionado |
+| D16 | Registro de política permitido sem configuração em vigor | Política mostrada como ativa que a rede nunca recebeu |
+
+### B. Figuras complementares do benchmark
+
+Todas as figuras cobrem as 5 rodadas, com 240 execuções por condição. Elas foram geradas com `agents/benchmark/plots.py`.
+
+**Seleção de ferramentas e extração de parâmetros.** Fração das execuções válidas em que o orquestrador chamou todas as ferramentas exigidas e nenhuma proibida, e em que fatia, alvo e janela gravados batem com o gabarito. Os pontos são as rodadas, e as barras de erro são intervalos de 95% por bootstrap sobre as intenções.
+
+![Seleção de ferramentas e extração](docs/figures/fig-bench-toolsel.png)
+
+**Latência por intenção.** Tempo do envio até a resposta do orquestrador, em escala logarítmica. As intenções com janela são só registradas e respondem em poucos segundos, enquanto as do UC1 passam pelos dois agentes de domínio e formam a cauda superior.
+
+![Latência](docs/figures/fig-bench-latency.png)
+
+**Chamadas redundantes por intenção.** Chamadas repetidas com argumentos idênticos pelo mesmo agente. A maioria das execuções não tem nenhuma, e as que passam de 50 são repetições contra um alvo inviável.
+
+![Chamadas redundantes](docs/figures/fig-bench-redundant.png)
+
+**Valores inválidos que entraram em vigor.** Fração das execuções inválidas em que o valor ofensivo chegou a um estado em vigor, por tipo de valor. Sem guardrails, os três tipos passam.
+
+![Vazamentos de valores inválidos](docs/figures/fig-bench-leaks.png)
+
+**Sucesso por rodada.** Taxa de sucesso nas intenções válidas em cada uma das 5 rodadas, por condição.
+
+![Sucesso por rodada](docs/figures/fig-bench-rounds.png)
+
+### C. Enforcement em testbed emulado
+
+Cinco execuções do `run_enforcement_probe.py` com UPF real e limite de vazão por `tc`, mas com o gNB e os UEs emulados. Uma intenção de 5 Mbps na SST 1 com janela de três minutos baixou a vazão medida da fatia de 15,35 para 5,00 Mbps e a devolveu depois da janela, sem afetar a SST 2. Os dados estão em `agents/benchmark/results/emulated-enforcement/`, que não é versionado.
+
+![Enforcement emulado](docs/figures/fig-enforcement-emulated.png)

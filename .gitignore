@@ -24,6 +24,10 @@ agents/benchmark/results/
 *.txt
 *.md
 *.tex
+# exceções: versionados mesmo com as regras acima (README traz o apêndice do TCC)
+!README.md
+!docs/figures/
+!agents/benchmark/plots.py
 
 # Docs
 *.pdf

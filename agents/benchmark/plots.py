@@ -472,29 +472,46 @@ def fig_rq4(path, out):
     save(fig, out, "fig-rq4")
 
 
-def fig_enforcement(path, out):
-    """Lab: measured slice throughput across an enforced window."""
-    rows = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
-    life = next(r for r in rows if r["kind"] == "lifecycle")
-    smp = [r for r in rows if r["kind"] == "sample"]
+def fig_enforcement(paths, out):
+    """Measured slice throughput across an enforced window. One file: that run,
+    with lines where both domains were configured and where it was reverted.
+    Several files (repetitions): runs overlaid, those instants as tick marks."""
+    if isinstance(paths, str):
+        paths = [paths]
+    runs = []
+    for path in paths:
+        rows = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+        runs.append((next(r for r in rows if r["kind"] == "lifecycle"),
+                     [r for r in rows if r["kind"] == "sample"]))
+    life = runs[0][0]
     sst = str(life["sst"])
     dur = (datetime.fromisoformat(life["window_end"]) -
            datetime.fromisoformat(life["window_start"])).total_seconds()
+    many = len(runs) > 1
     fig, ax = plt.subplots(figsize=(FULL_W, 2.3))
     ax.axvspan(0, dur, color=GREY_L, alpha=0.6, lw=0, label="Intent window")
-    for k, c, ls in (("1", BLUE, "-"), ("2", GREY_D, "--")):
-        xs = [s["rel_s"] for s in smp if s["thp_dl_mbps"].get(k) is not None]
-        ys = [s["thp_dl_mbps"][k] for s in smp if s["thp_dl_mbps"].get(k) is not None]
-        if xs and any(ys):
-            ax.plot(xs, ys, ls=ls, color=c, lw=1.2, label=f"SST={k} measured DL")
+    for i, (_, smp) in enumerate(runs):
+        for k, c, ls in (("1", BLUE, "-"), ("2", GREY_D, "--")):
+            xs = [s["rel_s"] for s in smp if s["thp_dl_mbps"].get(k) is not None]
+            ys = [s["thp_dl_mbps"][k] for s in smp if s["thp_dl_mbps"].get(k) is not None]
+            if xs and any(ys):
+                ax.plot(xs, ys, ls=ls, color=c, lw=0.9 if many else 1.2, alpha=0.75 if many else 1,
+                        label=f"SST={k} measured DL" + (f" ({len(runs)} runs)" if many else "") if i == 0 else None)
     ax.hlines(life["target_thp_mbps"], 0, dur, color=BLUE, ls=":", lw=1.2,
               label=f"Intent target ({life['target_thp_mbps']:g} Mbps, SST={sst})")
     ax.set_ylim(0, ax.get_ylim()[1] * 1.15)
-    for x, lbl in ((life.get("activation_delay_s"), "both domains\nconfigured"),
-                   (dur + (life.get("reversion_delay_s") or 0), "reverted")):
-        if x is not None:
-            ax.axvline(x, color=GREY_D, lw=0.8)
-            ax.text(x, ax.get_ylim()[1], " " + lbl, fontsize=7, va="top", color=GREY_D)
+    top = ax.get_ylim()[1]
+    if many:
+        act = [l.get("activation_delay_s") for l, _ in runs if l.get("activation_delay_s") is not None]
+        rev = [dur + l["reversion_delay_s"] for l, _ in runs if l.get("reversion_delay_s") is not None]
+        ax.plot(act, [top * 0.93] * len(act), "v", color=GREY_D, ms=4, label="Both domains configured")
+        ax.plot(rev, [top * 0.93] * len(rev), "^", color=GREY_D, ms=4, mfc="white", label="Reverted")
+    else:
+        for x, lbl in ((life.get("activation_delay_s"), "both domains\nconfigured"),
+                       (dur + (life.get("reversion_delay_s") or 0), "reverted")):
+            if x is not None:
+                ax.axvline(x, color=GREY_D, lw=0.8)
+                ax.text(x, top, " " + lbl, fontsize=7, va="top", color=GREY_D)
     ax.set_xlabel("Time relative to window start (s)")
     ax.set_ylabel("Throughput (Mbps)")
     ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
@@ -508,7 +525,7 @@ def main() -> None:
     ap.add_argument("--rounds", nargs="+", default=[], help="round directories (6 JSONLs each)")
     ap.add_argument("--probes", nargs="+", help="window-probes JSONL file(s)/globs; several = repetitions")
     ap.add_argument("--rq4", help="rq4 JSONL")
-    ap.add_argument("--enforcement", help="enforcement-probe JSONL (lab)")
+    ap.add_argument("--enforcement", nargs="+", help="enforcement-probe JSONL(s); several = repetitions, overlaid")
     ap.add_argument("--out", default="tcc2/figures/results")
     a = ap.parse_args()
 
