@@ -1,0 +1,4 @@
+id,created_at,source,type,intent_id,sst,payload,handled_at,outcome
+4,2026-11-10 18:51:51.889053+00,sla-monitor,sla_violation,10,1,"{""target_thp_mbps"": 243.0, ""observed_thp_mbps"": 203.998, ""consecutive_samples"": 3}",,
+5,2026-11-10 19:03:21.910469+00,sla-monitor,sla_violation,11,1,"{""target_thp_mbps"": 243.0, ""observed_thp_mbps"": 203.988, ""consecutive_samples"": 3}",,
+6,2026-11-10 19:12:51.96297+00,sla-monitor,sla_violation,12,1,"{""target_thp_mbps"": 243.0, ""observed_thp_mbps"": 204.071, ""consecutive_samples"": 3}",,

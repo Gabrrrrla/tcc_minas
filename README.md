@@ -57,7 +57,7 @@ Intenção com janela ("20 Mbps on the streaming slice from 18:00 to 22:00"). O 
 ```
 tcc_minas/
 ├── docker-compose.yml          # Stack completa (Open5GS + monitoramento + banco + agentes)
-├── docker-compose.lab.yml      # Overlay do lab: GTP-U pela bridge, NAT das UEs, iperf/iperf-b,
+├── docker-compose.lab.yml      # Overlay do lab: GTP-U pela bridge, NAT das UEs,
 │                               #   collector real, upf-shaper, ENFORCEMENT_MODE=real
 ├── requirements.txt            # Dependências Python dos agentes
 ├── env.example                 # Variáveis de ambiente (copiar para .env)
@@ -123,7 +123,7 @@ tcc_minas/
 │   ├── provision.lab.js        # igual, com o SD do lab; chips reais vêm de sims.lab.js
 │   ├── sims.lab.example.js     # modelo do sims.lab.js (IMSI/K/OPc reais, NÃO versionado)
 │   ├── lab_install.sh          # instalação no servidor do lab (pacotes, .env, Ollama, imagens)
-│   ├── ue_traffic.py           # tráfego DL TCP para as UEs a partir da UPF + log por segundo
+│   ├── ue_traffic.py           # tráfego DL TCP para as UEs pelo navegador do celular + log por segundo
 │   ├── inspect.js              # Consulta subscriber no MongoDB
 │   ├── lab_preflight.sh        # checagens do host do lab ANTES de subir (SCTP, portas, sub-redes, Ollama, CPU, NTP)
 │   ├── lab_smoke.sh            # teste de fumaça DEPOIS de subir (containers, health, enforcement, Prometheus, KPIs)
@@ -163,8 +163,6 @@ Só com o overlay `docker-compose.lab.yml`:
 
 | Container | O que é | IP / porta |
 |---|---|---|
-| iperf | servidor `iperf3 -s` da UE-A | 10.11.0.70 |
-| iperf-b | segundo servidor, para a UE-B (o `iperf3 -s` atende um cliente por vez) | 10.11.0.71 |
 | upf-shaper | sidecar na rede do `upf` (`NET_ADMIN`), `agents/enforcers/upf_shaper.py` | upf:9300 |
 
 O `gnb_slicer.py` não é container: roda nativo no host do gNB (porta 8010), porque o srsRAN roda fora do Docker.
@@ -229,11 +227,12 @@ Resumo (o passo a passo completo, com os experimentos E0–E4, o que salvar e o 
    docker compose -f docker-compose.yml -f docker-compose.lab.yml build upf-shaper
    docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d
    ```
-6. gNB → NG Setup no log do AMF → UEs → sessões nas duas fatias. Tráfego: cada celular roda um servidor iperf3 (Termux: `pkg install iperf3 && iperf3 -s`) e o servidor gera o downlink a partir da UPF, com log por segundo no relógio do servidor:
+6. gNB → NG Setup no log do AMF → UEs → sessões nas duas fatias. Tráfego: nada é instalado nos celulares. O `ue_traffic.py` roda no servidor, escuta em `10.11.0.1:8090` (a bridge do MINAS, nunca o IP público) e cada celular abre a sua página no navegador (`http://10.11.0.1:8090/A`, `/B`). A página puxa um download TCP sem fim, no ritmo pedido, descarta os bytes e devolve por segundo quanto recebeu. O log fica no relógio do servidor, com o enviado, o recebido por cada celular e a vazão de cada fatia na UPF:
    ```bash
    python3 scripts/ue_traffic.py --find                                    # IPs das UEs (log do SMF)
-   python3 scripts/ue_traffic.py --ue A=10.45.0.2 --ue B=10.46.0.2 --duration 900 --label e2-rep1
+   python3 scripts/ue_traffic.py --ue A --ue B --duration 900 --label e2-rep1
    ```
+   O firewall do host precisa aceitar TCP de `10.11.0.0/24` na porta 8090 (a mesma regra da `:8010` do slicer). O script testa isso de dentro da UPF ao iniciar.
 7. `SHAPER_WRITE_TEST=1 bash scripts/lab_smoke.sh` → 0 FAIL.
 8. Depois de cada experimento: `bash scripts/lab_collect.sh <label> [minutos]`.
 

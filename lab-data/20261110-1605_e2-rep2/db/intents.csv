@@ -1,0 +1,2 @@
+id,received_at,raw_text,sst,target_thp_mbps,window_start,window_end,status
+11,2026-11-10 18:57:29.732649+00,Guarantee 243 Mbps on the eMBB slice (SST=1) from 16:01 to 16:04 today (2026-11-10).,1,243,2026-11-10 19:01:00+00,2026-11-10 19:04:00+00,reverted

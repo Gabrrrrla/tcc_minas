@@ -1,0 +1,11 @@
+t_epoch,t_iso,ue,event,detail
+1794255338.269,2026-11-09T17:15:38,B,phase_start,phase=1 rate=0 secs=60
+1794255343.626,2026-11-09T17:15:43,B,iperf_exit_early,rc=1 left=54s (outage? retrying in 2 s)
+1794255351.000,2026-11-09T17:15:51,B,iperf_exit_early,rc=1 left=47s (outage? retrying in 2 s)
+1794255358.386,2026-11-09T17:15:58,B,iperf_exit_early,rc=1 left=39s (outage? retrying in 2 s)
+1794255365.743,2026-11-09T17:16:05,B,iperf_exit_early,rc=1 left=32s (outage? retrying in 2 s)
+1794255373.118,2026-11-09T17:16:13,B,iperf_exit_early,rc=1 left=25s (outage? retrying in 2 s)
+1794255380.480,2026-11-09T17:16:20,B,iperf_exit_early,rc=1 left=17s (outage? retrying in 2 s)
+1794255387.873,2026-11-09T17:16:27,B,iperf_exit_early,rc=1 left=10s (outage? retrying in 2 s)
+1794255395.239,2026-11-09T17:16:35,B,iperf_exit_early,rc=1 left=3s (outage? retrying in 2 s)
+1794255397.239,2026-11-09T17:16:37,B,phase_end,phase=1

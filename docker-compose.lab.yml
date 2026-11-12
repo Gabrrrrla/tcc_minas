@@ -48,32 +48,15 @@ services:
     volumes:
       - ./open5gs/upf.lab.yaml:/opt/open5gs/etc/open5gs/upf.yaml
     # Same TUN setup as the base file, plus NAT so UE traffic can leave the
-    # UPF (to the iperf server below, or the internet if the host has it).
+    # UPF (to scripts/ue_traffic.py on the host at 10.11.0.1:8090, or the
+    # internet if the host has it).
     command:
       - "ip tuntap add name ogstun mode tun 2>/dev/null || true; ip addr add 10.45.0.1/16 dev ogstun 2>/dev/null || true; ip link set ogstun up; ip tuntap add name ogstun2 mode tun 2>/dev/null || true; ip addr add 10.46.0.1/16 dev ogstun2 2>/dev/null || true; ip link set ogstun2 up; echo 1 > /proc/sys/net/ipv4/ip_forward; iptables -t nat -C POSTROUTING -s 10.45.0.0/16 ! -o ogstun -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.45.0.0/16 ! -o ogstun -j MASQUERADE; iptables -t nat -C POSTROUTING -s 10.46.0.0/16 ! -o ogstun2 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.46.0.0/16 ! -o ogstun2 -j MASQUERADE; exec open5gs-upfd"
 
-  # Traffic target for the UEs: `iperf3 -c 10.11.0.70 -R -b 20M` from a UE on
-  # the eMBB slice drives DL demand at the intent's target, which is what makes
-  # the SLA compliance rate meaningful (agents/benchmark/sla_report.py).
-  iperf:
-    image: networkstatic/iperf3:latest
-    container_name: iperf
-    command: ["-s"]
-    networks:
-      minas-net:
-        ipv4_address: 10.11.0.70
-    depends_on: [upf]
-
-  # iperf3 -s serves ONE client at a time: a second server for the second UE
-  # (two UEs on the two slices at once, LAB-ROTEIRO E2).
-  iperf-b:
-    image: networkstatic/iperf3:latest
-    container_name: iperf-b
-    command: ["-s"]
-    networks:
-      minas-net:
-        ipv4_address: 10.11.0.71
-    depends_on: [upf]
+  # UE traffic: no container. scripts/ue_traffic.py runs on the host, listens
+  # on 10.11.0.1:8090 and each phone opens its page in the browser (endless
+  # paced TCP download). That DL demand is what makes the SLA compliance rate
+  # meaningful (agents/benchmark/sla_report.py).
 
   collector:
     environment:

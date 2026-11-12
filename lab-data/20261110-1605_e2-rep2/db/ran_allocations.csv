@@ -1,0 +1,2 @@
+id,intent_id,applied_at,reverted_at,sst,prb_allocated,supported_thp_mbps,prb_previous,status
+10,11,2026-11-10 19:02:14.995616+00,2026-11-10 19:04:22.201689+00,1,92,245.64,,reverted

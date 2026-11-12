@@ -19,6 +19,7 @@ venv/
 # Benchmark run output (agents/benchmark/run_benchmark.py) — raw per-run data,
 # not source; regenerate via the runner rather than versioning it.
 agents/benchmark/results/
+!agents/benchmark/results/**/*.jsonl
 
 # Texto
 *.txt
@@ -37,6 +38,10 @@ tcc2/
 
 # lab runs (scripts/lab_collect.sh)
 lab-data/
+!lab-data/
+!lab-data/*/
+!lab-data/*/probe/
+!lab-data/*/probe/*.jsonl
 
 # lab: configs do gNB do Miguel (hardware do lab) e SIMs reais
 gnb_ru_liteon*.yml

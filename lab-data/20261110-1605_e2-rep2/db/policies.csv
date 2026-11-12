@@ -1,0 +1,2 @@
+id,intent_id,applied_at,reverted_at,sst,enforced_thp_mbps,qos_5qi,gbr_dl_mbps,mbr_dl_mbps,status
+5,11,2026-11-10 19:01:15.529615+00,2026-11-10 19:04:02.867135+00,1,243,9,243,243,reverted

@@ -1,0 +1,4 @@
+t_epoch,t_iso,ue,event,detail
+1794259478.768,2026-11-09T18:24:38,A,phase_start,phase=1 rate=0 secs=10
+1794259484.010,2026-11-09T18:24:44,A,iperf_exit_early,rc=1 left=4s (outage? retrying in 2 s)
+1794259491.261,2026-11-09T18:24:51,A,phase_end,phase=1
