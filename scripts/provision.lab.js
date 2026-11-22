@@ -1,15 +1,15 @@
-// LAB (UNISINOS): igual a provision.js, mas com o SD que o gNB do lab anuncia
-// (SST 1 / SD 111111, SST 2 / SD 222222). Usado só pelo docker-compose.lab.yml.
+// LAB (UNISINOS): same as provision.js, but with the SD that the lab gNB advertises
+// (SST 1 / SD 111111, SST 2 / SD 222222). Used only by docker-compose.lab.yml.
 //
-// Os IMSI/K/OPc REAIS (chips azuis do lab) ficam em scripts/sims.lab.js, que
-// NÃO é versionado (.gitignore; o repo é público). Para criar:
+// The REAL IMSI/K/OPc (lab SIM cards) are in scripts/sims.lab.js, which
+// is NOT versioned (.gitignore; the repository is public). To create it:
 //   cp scripts/sims.lab.example.js scripts/sims.lab.js && nano scripts/sims.lab.js
-// Sem esse arquivo, cadastra as credenciais de TESTE abaixo (servem só sem rádio).
+// Without that file, the TEST credentials below are registered (useful only without radio).
 //
-// UE 1 (UE-A): assinado nas duas fatias — SST=1 (eMBB, DNN internet, padrão) e SST=2 (DNN slice2)
-// UE 2 (UE-B): assinado só na SST=2 (DNN slice2, fatia de missão crítica, UC1)
+// UE 1 (UE-A): subscribed to both slices — SST=1 (eMBB, DNN internet, default) and SST=2 (DNN slice2)
+// UE 2 (UE-B): subscribed only to SST=2 (DNN slice2, mission-critical slice, UC1)
 //
-// Recadastrar depois de mudar os chips:
+// Register again after changing the SIM cards:
 //   docker compose -f docker-compose.yml -f docker-compose.lab.yml up provision
 
 var SIMS = {
@@ -17,7 +17,7 @@ var SIMS = {
   ue2: { imsi: '001010000000002', k: '465B5CE8B199B49FAA5F0A2EE238A6BC', opc: 'E8ED289DEBA952E4283B54E88E6183CA' }
 };
 try {
-  load('/scripts/sims.lab.js');   // redefine SIMS com os chips reais
+  load('/scripts/sims.lab.js');   // redefines SIMS with the real SIM cards
   print('SIMs from scripts/sims.lab.js');
 } catch (e) {
   print('WARNING: scripts/sims.lab.js not found or invalid (' + e + ') -> TEST credentials (no real phone will attach)');

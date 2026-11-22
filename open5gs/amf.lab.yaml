@@ -1,4 +1,4 @@
-# LAB: igual a amf.yaml, com o SD por fatia que o gNB do lab anuncia.
+# LAB: same as amf.yaml, with the per-slice SD that the lab gNB advertises.
 logger:
   file: /opt/open5gs/var/log/open5gs/amf.log
 

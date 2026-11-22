@@ -1,7 +1,7 @@
 """
-Esqueleto de um cliente para a interface O1 (NETCONF/YANG) em direção ao nó RAN.
-A fonte ideal de KPIs da RAN. O srsRAN do lab tem medições de desempenho por meio da interface O1, conforme as especificações 3GPP TS 28.550 / TS 28.552: é possível obter diretamente RSRP, SINR, MCS, utilização de PRBs e throughput por UE e por S-NSSAI, em vez de utilizar o Prometheus / contadores do UPF como intermediários.
-Bloqueado por: qual software está sendo executado no gNB do laboratório (srsRAN / OAI / Amarisoft) e se ele disponibiliza a interface O1.
+Skeleton of a client for the O1 interface (NETCONF/YANG) towards the RAN node.
+The ideal source of RAN KPIs. Through O1, following 3GPP TS 28.550 / TS 28.552, a gNB can report RSRP, SINR, MCS, PRB usage, and throughput per UE and per S-NSSAI directly, instead of going through Prometheus / UPF counters.
+Not implemented: the laboratory gNB did not expose O1 to MINAS.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ O1_HOST = os.getenv("O1_HOST", "")  # NETCONF endpoint of the gNB / RAN OAM
 
 
 def get_ran_pm(sst: int) -> dict:
-    """Retorna um dicionário no formato `ran_kpis` para cada slice, a partir da árvore de gerenciamento de desempenho da RAN.
-    Lança `NotImplementedError` até que a interface O1 esteja configurada e conectada.
+    """Returns a dict in the `ran_kpis` format for a slice, from the RAN performance management tree.
+    Raises `NotImplementedError` until the O1 interface is configured and connected.
     """
-    raise NotImplementedError("O1 interface ainda não implementada")
+    raise NotImplementedError("O1 interface not implemented yet")

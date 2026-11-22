@@ -8,7 +8,7 @@
 #   GNB_EXTRA_ARGS  extra arguments after the rendered config,
 #                   e.g. "-c metricas.yml"
 #
-# UNISINOS lab (OCUDU): GNB_DIR=<pasta do gnb> GNB_BIN=./gnb GNB_CPUS=0-17
+# UNISINOS lab (OCUDU): GNB_DIR=<gnb folder> GNB_BIN=./gnb GNB_CPUS=0-17
 #                       GNB_EXTRA_ARGS="-c metricas.yml"
 #   -> taskset -c 0-17 ./gnb -c /tmp/gnb.minas.yaml -c metricas.yml
 # Must be run as root (DPDK / hugepages).

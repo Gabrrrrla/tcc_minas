@@ -1,154 +1,157 @@
 # MINAS - Multi-Agent Intent-Driven Network Analytics and Slicing
 
-TCC II - Ciência da Computação, UNISINOS
-Orientador: Prof. Dr. Cristiano Bonato Both
+Undergraduate thesis (TCC II), Computer Science, UNISINOS
+Advisor: Prof. Dr. Cristiano Bonato Both
 
-Sistema multiagente que traduz intenções de operador em linguagem natural em configuração das fatias de rede 5G, no núcleo e no acesso rádio. Um orquestrador decompõe cada intenção em diretivas para um agente de núcleo (CN-NSSMF) e um agente de rádio (RAN-NSSMF), coordenados por MCP. Guardrails determinísticos validam toda chamada de ferramenta, RAG ancora a interpretação em trechos das specs 3GPP, uma NWDAF prevê a carga das fatias, e código determinístico (não o modelo) ativa e reverte as intenções com janela.
+A multi-agent system that turns operator intents written in natural language into the configuration of 5G network slices, in the core and in the radio access. An orchestrator agent decomposes each intent into directives for a core agent (CN-NSSMF) and a RAN agent (RAN-NSSMF), coordinated over MCP. Deterministic guardrails validate every tool call, retrieval (RAG) grounds the interpretation in excerpts of the 3GPP specifications, an NWDAF predicts the load of each slice, and deterministic code (not the model) activates and reverts intents that have a time window.
 
-**Estado (03/11/2026):**
-- avaliação sem enforcement concluída: benchmark em 5 rodadas, baseline monolítico e probes de janela, de falha e do UC1 (seção [Benchmark e experimentos](#benchmark-e-experimentos));
-- enforcement real implementado (`ENFORCEMENT_MODE=real`) e ensaiado com uma UPF real e um gNB simulado; **a validação no laboratório com gNB e UEs reais está pendente** (ver `LAB-2026-11-03.md`, não versionado).
+**Status (22/11/2026):**
+- evaluation without enforcement complete: benchmark in 5 rounds, monolithic baseline, and window, fault, and UC1 probes (see [Benchmark and experiments](#benchmark-and-experiments));
+- real enforcement implemented (`ENFORCEMENT_MODE=real`) and evaluated in an emulated testbed (real UPF, stand-in gNB) and in the laboratory (Open5GS, OCUDU/srsRAN gNB with a commercial RU, two smartphones). The laboratory runs completed the lifecycle in both domains. The effect of the PRB reservation on a loaded cell was not measured.
+
+The **16 benchmark intents** and their ground truth are in [`agents/benchmark/intents.json`](agents/benchmark/intents.json) and listed in [Benchmark intents](#benchmark-intents).
 
 ---
 
-## Arquitetura
+## Architecture
 
 ```
-Operador (linguagem natural)
+Operator (natural language)
         │  POST /intent
         ▼
-┌─────────────────────┐      RAG (trechos 3GPP)
-│    Orquestrador     │  ←   LLM + ReAct + tool-calling (cliente MCP)
-│  + scheduler (código)│
-└──────┬──────────────┘
-       │ diretivas via MCP (streamable HTTP)
+┌──────────────────────┐      RAG (3GPP excerpts)
+│  Orchestrator agent  │  ←   LLM + ReAct + tool calling (MCP client)
+│ + window scheduler   │
+└──────┬───────────────┘
+       │ directives over MCP (streamable HTTP)
   ┌────┴─────────┐
   ▼              ▼
-CN-NSSMF       RAN-NSSMF      ← servidores MCP; cada diretiva roda um loop ReAct próprio
-(núcleo)       (rádio)
+CN-NSSMF       RAN-NSSMF      ← MCP servers; each directive runs its own ReAct loop
+(core agent)   (RAN agent)
   │  │  NWDAF (RandomForest, Nnwdaf_AnalyticsInfo)
   │  │
   │  └─ ENFORCEMENT_MODE=real ─┐
   ▼                            ▼
-upf-shaper (tc na UPF)      gnb_slicer (sched_cfg + restart do gNB)
-Open5GS (Docker)            srsRAN Project (host do lab) ── RU física
+upf-shaper (tc at the UPF)  gnb_slicer (sched_cfg + gNB restart)
+Open5GS (Docker)            OCUDU / srsRAN Project (lab host) ── physical RU
 ```
 
-A coordenação entre o orquestrador e os agentes de domínio é feita por **MCP** (Model Context Protocol): cada agente de domínio é um servidor MCP que expõe suas diretivas como ferramentas, e o orquestrador, como cliente, as descobre dinamicamente. A NWDAF usa HTTP, modelando a interface 3GPP `Nnwdaf_AnalyticsInfo` (TS 23.288 / TS 29.520).
+The orchestrator agent and the domain agents are coordinated over **MCP** (Model Context Protocol). Each domain agent is an MCP server that exposes its directives as tools, and the orchestrator agent, as a client, discovers them dynamically. The NWDAF uses HTTP, modelled on the 3GPP `Nnwdaf_AnalyticsInfo` interface (TS 23.288 / TS 29.520).
 
-**Duas fatias:**
-- `SST=1` (eMBB, DNN `internet`, UEs em 10.45.0.0/16, TUN `ogstun`) - streaming / UC2
-- `SST=2` (URLLC, DNN `slice2`, UEs em 10.46.0.0/16, TUN `ogstun2`) - missão crítica / UC1
-
----
-
-## Casos de uso
-
-### UC1 - Predição e ajuste de recursos (SST=2)
-Intenção sem janela ("keep 6 Mbps guaranteed on the URLLC slice"). O monitor do CN-NSSMF consulta a NWDAF a cada 30 s, com horizonte de 60 s. Se a demanda prevista passa da garantia em vigor + 10 %, avisa o orquestrador, que eleva a garantia nos dois domínios para previsão × 1,1, ou marca `degraded` se a RAN não comporta. No TCC I, o UC1 era definido por disponibilidade de memória; foi redefinido em vazão, que é o que os dois domínios controlam.
-
-### UC2 - Política de QoS agendada (SST=1)
-Intenção com janela ("20 Mbps on the streaming slice from 18:00 to 22:00"). O orquestrador grava a intenção como `scheduled`; no início da janela o scheduler manda as duas diretivas (o CN-NSSMF configura a política de QoS e o RAN-NSSMF reserva PRBs); no fim, reverte as duas. A ativação e a reversão são feitas por código, não pelo modelo.
+**Two slices:**
+- `SST=1` (eMBB, DNN `internet`, UEs in 10.45.0.0/16, TUN `ogstun`) - streaming / UC2
+- `SST=2` (URLLC, DNN `slice2`, UEs in 10.46.0.0/16, TUN `ogstun2`) - mission critical / UC1
 
 ---
 
-## Estrutura do repositório
+## Use cases
+
+### UC1 - Predictive resource adjustment (SST=2)
+An intent without a window ("keep 6 Mbps guaranteed on the URLLC slice"). The CN-NSSMF monitor queries the NWDAF every 30 s with a 60 s horizon. If the predicted demand exceeds the guarantee in force by more than 10 %, it notifies the orchestrator agent, which raises the guarantee in both domains to prediction × 1.1, or marks the intent `degraded` if the RAN cannot fit it.
+
+### UC2 - Scheduled QoS policy (SST=1)
+An intent with a window ("20 Mbps on the streaming slice from 18:00 to 22:00"). The orchestrator agent records the intent as `scheduled`. When the window opens, the window scheduler sends both directives (the CN-NSSMF configures the QoS policy and the RAN-NSSMF reserves PRBs), and when it closes, it reverts both. Activation and reversion are done by code, not by the model.
+
+---
+
+## Repository layout
 
 ```
 tcc_minas/
-├── docker-compose.yml          # Stack completa (Open5GS + monitoramento + banco + agentes)
-├── docker-compose.lab.yml      # Overlay do lab: GTP-U pela bridge, NAT das UEs,
-│                               #   collector real, upf-shaper, ENFORCEMENT_MODE=real
-├── requirements.txt            # Dependências Python dos agentes
-├── env.example                 # Variáveis de ambiente (copiar para .env)
+├── docker-compose.yml          # Full stack (Open5GS + monitoring + database + agents)
+├── docker-compose.lab.yml      # Lab overlay: GTP-U over the bridge, UE NAT,
+│                               #   real collector, upf-shaper, ENFORCEMENT_MODE=real
+├── requirements.txt            # Python dependencies of the agents
+├── env.example                 # Environment variables (copy to .env)
 │
-├── open5gs/                    # Configurações do 5G Core
+├── open5gs/                    # 5G core configuration
 │   ├── amf.yaml                # SST=1 + SST=2, TAC=1, PLMN 00101
 │   ├── smf.yaml                # DNN internet (10.45.0.0/16) + slice2 (10.46.0.0/16)
 │   ├── upf.yaml                # ogstun + ogstun2, advertise 127.0.0.1
-│   ├── upf.lab.yaml            # igual, advertise 10.11.0.22 (gNB no host, via bridge)
-│   ├── amf.lab.yaml            # lab: S-NSSAI com SD (SST 1/SD 111111, SST 2/SD 222222), como o gNB do lab
-│   ├── nssf.lab.yaml           # lab: mesmas S-NSSAI com SD
+│   ├── upf.lab.yaml            # same, advertise 10.11.0.22 (gNB on the host, via the bridge)
+│   ├── amf.lab.yaml            # lab: S-NSSAI with SD (SST 1/SD 111111, SST 2/SD 222222), as the lab gNB
+│   ├── nssf.lab.yaml           # lab: same S-NSSAI with SD
 │   └── nrf/scp/ausf/udm/udr/pcf/nssf/bsf.yaml
 │
 ├── srsran/
-│   └── gnb.yaml                # Esqueleto do gNB; no lab, o template é o gnb.lab.yaml (não versionado),
-│                               #   feito a partir da config do laboratório
+│   └── gnb.yaml                # gNB skeleton; in the lab the template is gnb.lab.yaml (not versioned),
+│                               #   derived from the laboratory configuration
 │
 ├── agents/
-│   ├── schema.sql              # Schema PostgreSQL
-│   ├── migrations/             # ALTERs p/ bancos já criados (schema.sql só roda num volume novo)
-│   ├── Dockerfile              # imagem única dos agentes (minas-agent:local; build context = raiz)
-│   ├── db.py                   # conexão PostgreSQL compartilhada (thread-safe, autocommit)
-│   ├── timeutil.py             # fuso do operador (MINAS_TZ): "agora" no prompt, horário sem fuso = local
-│   ├── react.py                # cliente Ollama + loop ReAct compartilhado
-│   ├── guardrails.py           # validação determinística de parâmetros (pré-dispatch, todos os agentes)
-│   ├── mcp_common.py           # helpers de cliente MCP (list_remote_tools / call_remote_tool)
-│   ├── enforcement.py          # cliente do enforcement real (push_core -> upf-shaper, push_ran -> gnb_slicer)
+│   ├── schema.sql              # PostgreSQL schema
+│   ├── migrations/             # ALTERs for existing databases (schema.sql only runs on a new volume)
+│   ├── Dockerfile              # single image for the agents (minas-agent:local; build context = repo root)
+│   ├── db.py                   # shared PostgreSQL connection (thread-safe, autocommit)
+│   ├── timeutil.py             # operator time zone (MINAS_TZ): "now" in the prompt, naive times = local
+│   ├── react.py                # Ollama client + shared ReAct loop
+│   ├── guardrails.py           # deterministic parameter validation (before dispatch, all agents)
+│   ├── mcp_common.py           # MCP client helpers (list_remote_tools / call_remote_tool)
+│   ├── enforcement.py          # real enforcement client (push_core -> upf-shaper, push_ran -> gnb_slicer)
 │   ├── enforcers/
-│   │   ├── upf_shaper.py       # sidecar na UPF: limite de DL por fatia com tc tbf (porta 9300)
-│   │   ├── gnb_slicer.py       # no host do gNB: min_prb_policy_ratio por fatia + restart (porta 8010)
-│   │   └── Dockerfile          # imagem do upf-shaper
+│   │   ├── upf_shaper.py       # UPF sidecar: per-slice DL ceiling with tc tbf (port 9300)
+│   │   ├── gnb_slicer.py       # on the gNB host: per-slice min_prb_policy_ratio + restart (port 8010)
+│   │   └── Dockerfile          # upf-shaper image
 │   ├── orchestrator/
-│   │   ├── main.py             # HTTP (POST /intent, POST /event) + CLI + RAG + system prompt; cliente MCP
-│   │   ├── tools.py            # 3 ferramentas locais + descoberta MCP + dedup + agendamento
-│   │   ├── scheduler.py        # janelas (UC2): ativa, reverte e limpa intenções failed com resíduo
-│   │   └── sla_monitor.py      # amostra o SLA das intenções em vigor -> sla_samples / eventos
+│   │   ├── main.py             # HTTP (POST /intent, POST /event) + CLI + RAG + system prompt; MCP client
+│   │   ├── tools.py            # 3 local tools + MCP discovery + dedup + scheduling
+│   │   ├── scheduler.py        # windows (UC2): activates, reverts, and cleans up failed intents with leftovers
+│   │   └── sla_monitor.py      # samples the SLA of intents in force -> sla_samples / events
 │   ├── cn-nssmf/
-│   │   ├── main.py             # servidor MCP :8001/mcp: apply_qos/revert_qos/query_nwdaf/check_sla
-│   │   ├── tools.py            # 5 ferramentas internas (ReAct) + dispatcher
-│   │   ├── monitor.py          # UC1 proativo: consulta a NWDAF e avisa o orquestrador (POST /event)
-│   │   └── nwdaf_client.py     # cliente da NWDAF (TS 23.288); cai pra mock se ela estiver fora
+│   │   ├── main.py             # MCP server :8001/mcp: apply_qos/revert_qos/query_nwdaf/check_sla
+│   │   ├── tools.py            # 5 internal tools (ReAct) + dispatcher
+│   │   ├── monitor.py          # proactive UC1: queries the NWDAF and notifies the orchestrator (POST /event)
+│   │   └── nwdaf_client.py     # NWDAF client (TS 23.288); falls back to a mock if it is down
 │   ├── ran-nssmf/
-│   │   ├── main.py             # servidor MCP :8002/mcp: apply_resources/revert_resources/check_sla
-│   │   └── tools.py            # 5 ferramentas internas (ReAct) + dispatcher + controle de admissão
+│   │   ├── main.py             # MCP server :8002/mcp: apply_resources/revert_resources/check_sla
+│   │   └── tools.py            # 5 internal tools (ReAct) + dispatcher + admission control
 │   ├── monolithic/
-│   │   └── main.py             # baseline: um agente ReAct único com as 13 ferramentas (:8010)
+│   │   └── main.py             # baseline: a single ReAct agent with the 13 tools (:8010)
 │   ├── nwdaf/
-│   │   ├── main.py             # Flask POST /analytics; RandomForest real p/ SLICE_LOAD_LEVEL
-│   │   ├── dataset.py          # janelas de lag compartilhadas (serviço e RQ4)
-│   │   └── benchmark_rq4.py    # RF vs GBM vs LSTM (+ baselines) offline sobre core_kpis (RQ4)
+│   │   ├── main.py             # Flask POST /analytics; real RandomForest for SLICE_LOAD_LEVEL
+│   │   ├── dataset.py          # shared lag windows (service and RQ4)
+│   │   └── benchmark_rq4.py    # RF vs GBM vs LSTM (+ baselines) offline over core_kpis (RQ4)
 │   ├── rag/
-│   │   ├── corpus.py           # 35 trechos curados (TS 23.501/23.288/28.312/38.300/28.552 + ReAct/MCP)
-│   │   └── retriever.py        # embeddings bge-small-en-v1.5; top 3 com similaridade >= 0,35
-│   ├── benchmark/              # benchmark, probes, baseline e figuras (ver seção própria)
-│   └── collector/              # amostrador core_kpis + ran_kpis (prometheus | synthetic | o1 | mock)
-│       ├── main.py             # loop de coleta -> INSERT core_kpis / ran_kpis
-│       ├── synth.py            # tráfego sintético com estrutura temporal (diário + AR(1) + picos)
-│       ├── backfill_synthetic.py # gera dias de histórico sintético num banco dedicado
-│       └── o1_client.py        # stub da interface O1/NETCONF do gNB
+│   │   ├── corpus.py           # 35 curated excerpts (TS 23.501/23.288/28.312/38.300/28.552 + ReAct/MCP)
+│   │   └── retriever.py        # bge-small-en-v1.5 embeddings; top 3 with similarity >= 0.35
+│   ├── benchmark/              # benchmark intents, probes, baseline, and figures (see below)
+│   └── collector/              # core_kpis + ran_kpis sampler (prometheus | synthetic | o1 | mock)
+│       ├── main.py             # collection loop -> INSERT core_kpis / ran_kpis
+│       ├── synth.py            # synthetic traffic with temporal structure (daily + AR(1) + bursts)
+│       ├── backfill_synthetic.py # generates days of synthetic history in a dedicated database
+│       └── o1_client.py        # stub of the gNB O1/NETCONF interface
 │
 ├── scripts/
-│   ├── provision.js            # Cadastra UE1 (SST=1+2) e UE2 (SST=2) no MongoDB
-│   ├── provision.lab.js        # igual, com o SD do lab; chips reais vêm de sims.lab.js
-│   ├── sims.lab.example.js     # modelo do sims.lab.js (IMSI/K/OPc reais, NÃO versionado)
-│   ├── lab_install.sh          # instalação no servidor do lab (pacotes, .env, Ollama, imagens)
-│   ├── ue_traffic.py           # tráfego DL TCP para as UEs pelo navegador do celular + log por segundo
-│   ├── inspect.js              # Consulta subscriber no MongoDB
-│   ├── lab_preflight.sh        # checagens do host do lab ANTES de subir (SCTP, portas, sub-redes, Ollama, CPU, NTP)
-│   ├── lab_smoke.sh            # teste de fumaça DEPOIS de subir (containers, health, enforcement, Prometheus, KPIs)
-│   ├── lab_collect.sh          # salva tudo de um experimento em lab-data/<ts>_<label>/
-│   └── gnb_restart.sh          # reinicia o gNB a partir da config gerada pelo gnb_slicer
+│   ├── provision.js            # registers UE1 (SST=1+2) and UE2 (SST=2) in MongoDB
+│   ├── provision.lab.js        # same, with the lab SD; real SIMs come from sims.lab.js
+│   ├── sims.lab.example.js     # template of sims.lab.js (real IMSI/K/OPc, NOT versioned)
+│   ├── lab_install.sh          # setup of the lab server (packages, .env, Ollama, images)
+│   ├── ue_traffic.py           # TCP DL traffic to the UEs through the phone browser + per-second log
+│   ├── udp_load.py             # UDP DL load sent from inside the UPF namespace (cell saturation)
+│   ├── inspect.js              # queries a subscriber in MongoDB
+│   ├── lab_preflight.sh        # lab host checks BEFORE starting (SCTP, ports, subnets, Ollama, CPU, NTP)
+│   ├── lab_smoke.sh            # smoke test AFTER starting (containers, health, enforcement, Prometheus, KPIs)
+│   ├── lab_collect.sh          # saves everything from one experiment to lab-data/<ts>_<label>/
+│   └── gnb_restart.sh          # restarts the gNB from the configuration rendered by gnb_slicer
 │
 └── monitoring/
-    ├── prometheus.yml          # Scrape: AMF, SMF, UPF (:9090) + upf-netdev (:9100, TUN por fatia)
+    ├── prometheus.yml          # scrape: AMF, SMF, UPF (:9090) + upf-netdev (:9100, TUN per slice)
     └── grafana/provisioning/datasources/prometheus.yml
 ```
 
-Não versionados (`.gitignore`): `tcc1/`, `tcc2/` (texto do TCC), `agents/benchmark/results/`, `lab-data/` e os `.md` de trabalho da raiz (handovers, revisão da banca, roteiro do lab).
+Not versioned (`.gitignore`): `tcc1/`, `tcc2/` (thesis text), `agents/benchmark/results/`, `lab-data/`, and the working notes at the repository root.
 
 ---
 
-## Serviços Docker
+## Docker services
 
-| Container | Imagem | IP | Porta exposta |
+| Container | Image | IP | Exposed port |
 |---|---|---|---|
 | mongodb | mongo:4.4 | 10.11.0.2 | - |
 | nrf / ausf / udm / udr / pcf / bsf / nssf / scp | gradiant/open5gs:2.6.4 | 10.11.0.10–17 | - |
 | amf | gradiant/open5gs:2.6.4 | 10.11.0.20 | **38412/sctp** |
 | smf | gradiant/open5gs:2.6.4 | 10.11.0.21 | - |
 | upf | gradiant/open5gs:2.6.4 | 10.11.0.22 | **2152/udp** |
-| upf-netdev | prom/node-exporter:v1.8.2 | (rede do upf) | - |
+| upf-netdev | prom/node-exporter:v1.8.2 | (upf network) | - |
 | webui | gradiant/open5gs-webui:2.6.4 | 10.11.0.30 | 3000 |
 | postgres | postgres:16-alpine | 10.11.0.40 | 5432 |
 | prometheus | prom/prometheus:v2.53.0 | 10.11.0.50 | 9090 |
@@ -159,27 +162,27 @@ Não versionados (`.gitignore`): `tcc1/`, `tcc2/` (texto do TCC), `agents/benchm
 | ran-nssmf | build `agents/Dockerfile` | 10.11.0.62 | 8002 |
 | nwdaf | build `agents/Dockerfile` | 10.11.0.63 | 8080 |
 
-Só com o overlay `docker-compose.lab.yml`:
+Only with the `docker-compose.lab.yml` overlay:
 
-| Container | O que é | IP / porta |
+| Container | What it is | IP / port |
 |---|---|---|
-| upf-shaper | sidecar na rede do `upf` (`NET_ADMIN`), `agents/enforcers/upf_shaper.py` | upf:9300 |
+| upf-shaper | sidecar in the `upf` network (`NET_ADMIN`), `agents/enforcers/upf_shaper.py` | upf:9300 |
 
-O `gnb_slicer.py` não é container: roda nativo no host do gNB (porta 8010), porque o srsRAN roda fora do Docker.
+`gnb_slicer.py` is not a container. It runs natively on the gNB host (port 8010), because the gNB runs outside Docker.
 
 ---
 
-## Como subir
+## Getting started
 
-### Pré-requisitos
-- Docker e Docker Compose
-- Ollama rodando no host (ou em outra máquina, via `OLLAMA_URL`) com `qwen2.5:7b`
-- Python 3.11+ no host para os scripts de benchmark
+### Requirements
+- Docker and Docker Compose
+- Ollama running on the host (or on another machine, via `OLLAMA_URL`) with `qwen2.5:7b`
+- Python 3.11+ on the host for the benchmark scripts
 
-### Modo benchmark (sem rádio, enforcement mock)
+### Benchmark mode (no radio, mock enforcement)
 
 ```bash
-git clone <url-do-repo> && cd tcc_minas
+git clone https://github.com/Gabrrrrla/tcc_minas && cd tcc_minas
 cp env.example .env          # OLLAMA_URL, MINAS_MODEL, MINAS_TZ
 docker compose up -d
 docker compose logs -f amf        # AMF initialize...OK
@@ -187,247 +190,248 @@ docker compose logs provision     # Subscriber ...001 provisioned
 curl localhost:8000/health
 ```
 
-Sem gNB, ponha no `.env` `CORE_SOURCE=synthetic` e `RAN_SOURCE=synthetic` (o default do compose, `prometheus`, só tem dados com UEs gerando tráfego). É assim que todas as medições do TCC foram feitas: `ENFORCEMENT_MODE` não definido = `mock`, os agentes decidem, validam e gravam, mas nada é escrito na rede.
+Without a gNB, set `CORE_SOURCE=synthetic` and `RAN_SOURCE=synthetic` in `.env` (the compose default, `prometheus`, only has data when UEs generate traffic). All simulated measurements of the thesis were made this way. With `ENFORCEMENT_MODE` unset (= `mock`), the agents decide, validate, and persist, but nothing is written to the network.
 
-| Interface | URL | Credenciais |
+| Interface | URL | Credentials |
 |---|---|---|
 | Open5GS WebUI | http://localhost:3000 | admin / 1423 |
 | Grafana | http://localhost:3001 | admin / minas |
 | Prometheus | http://localhost:9090 | - |
 
-### Modo lab (srsRAN + UEs reais, enforcement real)
+### Lab mode (real gNB and UEs, real enforcement)
 
-**Instalação no servidor do lab (uma vez, antes do dia).** Não sobe nada nem mexe no gNB/core do lab:
+**Setup on the lab server (once, before the experiments).** It starts nothing and does not touch the lab gNB or core:
 
 ```bash
 git clone https://github.com/Gabrrrrla/tcc_minas && cd tcc_minas
-bash scripts/lab_install.sh     # pacotes, SCTP, .env do lab, Ollama + qwen2.5:7b, imagens Docker
-nano scripts/sims.lab.js        # IMSI/K/OPc dos 2 chips (arquivo fora do git)
-bash scripts/lab_preflight.sh   # confere o host
+bash scripts/lab_install.sh     # packages, SCTP, lab .env, Ollama + qwen2.5:7b, Docker images
+nano scripts/sims.lab.js        # IMSI/K/OPc of the 2 SIM cards (file outside git)
+bash scripts/lab_preflight.sh   # checks the host
 ```
 
-O `lab_install.sh` termina com um resumo de falhas e avisos; pode rodar de novo depois de corrigir.
+`lab_install.sh` ends with a summary of failures and warnings, and it can be run again after fixing them.
 
-O srsRAN roda **fora do Docker** (DPDK), no mesmo servidor físico, e fala com o core direto pela bridge `minas-net`, sem NAT:
+The gNB runs **outside Docker** (DPDK), on the same physical server, and talks to the core directly over the `minas-net` bridge, without NAT:
 
 ```
-gNB (host) ──N2/SCTP──> AMF 10.11.0.20:38412      (bind do gNB: 10.11.0.1, gateway da bridge)
-gNB (host) <─N3/GTP-U─> UPF 10.11.0.22:2152       (open5gs/upf.lab.yaml anuncia esse IP)
+gNB (host) ──N2/SCTP──> AMF 10.11.0.20:38412      (gNB bind: 10.11.0.1, bridge gateway)
+gNB (host) <─N3/GTP-U─> UPF 10.11.0.22:2152       (open5gs/upf.lab.yaml advertises this IP)
 ```
 
-Resumo (o passo a passo completo, com os experimentos E0–E4, o que salvar e o plano B de cada passo, está em `LAB-2026-11-03.md`):
+Steps:
 
-1. `bash scripts/lab_preflight.sh`: checa o host (SCTP, portas, sub-redes, Ollama, isolamento de CPU, NTP).
-2. Template do gNB (`srsran/gnb.lab.yaml`, não versionado) a partir da config do laboratório, com `amf.addr 10.11.0.20`, `bind_addr 10.11.0.1`, N3 também em `10.11.0.1` e PLMN/TAC/S-NSSAI (com SD) iguais a `open5gs/amf.lab.yaml`. IMSI/K/OPc reais em `scripts/sims.lab.js` (não versionado; modelo em `scripts/sims.lab.example.js`), lido pelo `provision.lab.js`.
-3. No host do gNB, subir o `gnb_slicer.py` (ver [Enforcement real](#enforcement-real)).
-4. `.env`: `ENFORCEMENT_MODE=real` (padrão do overlay), `GNB_SLICER_URL`, `ENFORCEMENT_TIMEOUT_S` maior que o tempo de restart do gNB, e `RAN_PRB_TOTAL`/`RAN_MBPS_PER_PRB` da célula (no lab: 100 MHz, SCS 30 kHz = 273 PRB; Mbps/PRB medido).
-5. Subir:
+1. `bash scripts/lab_preflight.sh`: checks the host (SCTP, ports, subnets, Ollama, CPU isolation, NTP).
+2. gNB template (`srsran/gnb.lab.yaml`, not versioned) derived from the laboratory configuration, with `amf.addr 10.11.0.20`, `bind_addr 10.11.0.1`, N3 also on `10.11.0.1`, and PLMN/TAC/S-NSSAI (with SD) equal to `open5gs/amf.lab.yaml`. Real IMSI/K/OPc in `scripts/sims.lab.js` (not versioned, template in `scripts/sims.lab.example.js`), read by `provision.lab.js`.
+3. On the gNB host, start `gnb_slicer.py` (see [Real enforcement](#real-enforcement)).
+4. `.env`: `ENFORCEMENT_MODE=real` (overlay default), `GNB_SLICER_URL`, `ENFORCEMENT_TIMEOUT_S` longer than the gNB restart, and the cell's `RAN_PRB_TOTAL`/`RAN_MBPS_PER_PRB` (in the lab: 100 MHz, SCS 30 kHz = 273 PRB, measured 2.67 Mbps/PRB).
+5. Start:
    ```bash
    docker compose build
    docker compose -f docker-compose.yml -f docker-compose.lab.yml build upf-shaper
    docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d
    ```
-6. gNB → NG Setup no log do AMF → UEs → sessões nas duas fatias. Tráfego: nada é instalado nos celulares. O `ue_traffic.py` roda no servidor, escuta em `10.11.0.1:8090` (a bridge do MINAS, nunca o IP público) e cada celular abre a sua página no navegador (`http://10.11.0.1:8090/A`, `/B`). A página puxa um download TCP sem fim, no ritmo pedido, descarta os bytes e devolve por segundo quanto recebeu. O log fica no relógio do servidor, com o enviado, o recebido por cada celular e a vazão de cada fatia na UPF:
+6. gNB → NG Setup in the AMF log → UEs → sessions on both slices. Traffic: nothing is installed on the phones. `ue_traffic.py` runs on the server, listens on `10.11.0.1:8090` (the MINAS bridge, never the public IP), and each phone opens its page in the browser (`http://10.11.0.1:8090/A`, `/B`). The page pulls an endless TCP download at the requested rate, discards the bytes, and reports every second how much it received. The log uses the server clock, with the bytes sent, received by each phone, and the throughput of each slice at the UPF:
    ```bash
-   python3 scripts/ue_traffic.py --find                                    # IPs das UEs (log do SMF)
+   python3 scripts/ue_traffic.py --find                                    # UE IPs (SMF log)
    python3 scripts/ue_traffic.py --ue A --ue B --duration 900 --label e2-rep1
    ```
-   O firewall do host precisa aceitar TCP de `10.11.0.0/24` na porta 8090 (a mesma regra da `:8010` do slicer). O script testa isso de dentro da UPF ao iniciar.
+   The host firewall must accept TCP from `10.11.0.0/24` on port 8090 (the same rule as the slicer's `:8010`). The script tests this from inside the UPF at start-up.
 7. `SHAPER_WRITE_TEST=1 bash scripts/lab_smoke.sh` → 0 FAIL.
-8. Depois de cada experimento: `bash scripts/lab_collect.sh <label> [minutos]`.
+8. After each experiment: `bash scripts/lab_collect.sh <label> [minutes]`.
 
-O LLM não deve disputar CPU com o gNB: em GPU, ou em outra máquina (`OLLAMA_URL`). Sem `isolcpus` nos núcleos do gNB, prenda os containers nos outros depois de subir: `docker update --cpuset-cpus <núcleos livres> $(docker ps -q)`.
+The LLM must not compete for CPU with the gNB. Run it on a GPU or on another machine (`OLLAMA_URL`). Without `isolcpus` on the gNB cores, pin the containers to the other cores after starting: `docker update --cpuset-cpus <free cores> $(docker ps -q)`.
 
 ---
 
-## Agentes
+## Agents
 
-Os agentes usam **Ollama** como servidor de inferência local, sem APIs externas.
+The agents use **Ollama** as a local inference server, without external APIs.
 
 ```bash
 ollama serve
-ollama pull qwen2.5:7b     # modelo padrão do MINAS
+ollama pull qwen2.5:7b     # MINAS default model
 ```
 
-### Escolha do modelo
+### Model choice
 
-O modelo é escolhido por `MINAS_MODEL`. O benchmark (5 rodadas, 240 execuções por condição) comparou três modelos de até 8 B parâmetros:
+The model is selected by `MINAS_MODEL`. The benchmark (5 rounds, 240 executions per condition) compared three models of up to 8 B parameters:
 
-| Modelo | Intenções válidas atendidas | Observação |
+| Model | Valid intents fulfilled | Note |
 |---|---|---|
-| `qwen2.5:7b` | 88 % (77 % conferindo também o GBR do core) | o único que conduziu o loop nos dois domínios; **padrão** |
-| `llama3.1:8b` | 51 % | completa as intenções com janela, quase nunca as do UC1 |
-| `otel-llm-e4b-it` | 0 % | especializado em telecom; nenhuma chamada de ferramenta em 240 execuções |
+| `qwen2.5:7b` | 88 % (77 % when the core GBR is also checked) | the only one that drove the loop in both domains; **default** |
+| `llama3.1:8b` | 51 % | completes the windowed intents, almost never the UC1 ones |
+| `otel-llm-e4b-it` | 0 % | telecom-specialized; no tool call in 240 executions |
 
-**OTel-LLM-E4B-IT.** A série [OTel-LLM](https://huggingface.co/collections/farbodtavakkoli/otel-llm) é fine-tuned em specs 3GPP/O-RAN/ETSI/ITU com o formato pergunta + contexto recuperado + resposta. Sem RAG, o modelo se abstinha ("Answer not found in the retrieved context"); com RAG, passou a inventar respostas completas, também sem chamar ferramentas. O próprio model card avisa que o treino não tem exemplos de tool-calling. Para reproduzir, os modelos vêm em `.bin` PyTorch e precisam ser convertidos para GGUF (confira antes as quantizações prontas em `inference/ollama` no repositório da OTel):
+**OTel-LLM-E4B-IT.** The [OTel-LLM](https://huggingface.co/collections/farbodtavakkoli/otel-llm) series is fine-tuned on 3GPP/O-RAN/ETSI/ITU specifications in a question + retrieved context + answer format. Without RAG, the model abstained ("Answer not found in the retrieved context"). With RAG, it wrote complete invented answers, still without calling tools. Its model card states that the training has no tool-calling examples. To reproduce, the models come as PyTorch `.bin` files and must be converted to GGUF (check first for ready quantizations in `inference/ollama` in the OTel repository):
 
 ```bash
-huggingface-cli download farbodtavakkoli/OTel-LLM-E4B-IT --local-dir otel-e4b   # ~31,5 GB
+huggingface-cli download farbodtavakkoli/OTel-LLM-E4B-IT --local-dir otel-e4b   # ~31.5 GB
 git clone https://github.com/ggml-org/llama.cpp && pip install -r llama.cpp/requirements.txt
 python llama.cpp/convert_hf_to_gguf.py otel-e4b --outfile otel-e4b-f16.gguf --outtype f16
-./llama-quantize otel-e4b-f16.gguf otel-e4b-q4_k_m.gguf Q4_K_M    # binário de um release do llama.cpp
+./llama-quantize otel-e4b-f16.gguf otel-e4b-q4_k_m.gguf Q4_K_M    # binary from a llama.cpp release
 printf 'FROM ./otel-e4b-q4_k_m.gguf\n' | ollama create otel-llm-e4b-it -f -
 ```
 
-### Orquestrador (`agents/orchestrator/`)
+### Orchestrator agent (`agents/orchestrator/`)
 
-Recebe a intenção e conduz o loop ReAct. Modo serviço (`python main.py`, porta 8000) ou CLI (`python main.py "<intenção>"`, sem as threads de fundo).
+Receives the intent and drives the ReAct loop. Service mode (`python main.py`, port 8000) or CLI (`python main.py "<intent>"`, without the background threads).
 
 ```bash
 curl -X POST localhost:8000/intent -H 'content-type: application/json' \
   -d '{"intent": "Guarantee 20 Mbps on the streaming slice (SST=1) from 18:00 to 22:00 tomorrow."}'
 ```
 
-**Ferramentas.** Locais: `record_intent`, `get_sla_status`, `update_intent_status`. De domínio, descobertas via MCP e apresentadas com prefixo do agente: `cn_nssmf_apply_qos` / `cn_nssmf_revert_qos` / `cn_nssmf_query_nwdaf` / `cn_nssmf_check_sla` (`http://cn-nssmf:8001`) e `ran_nssmf_apply_resources` / `ran_nssmf_revert_resources` / `ran_nssmf_check_sla` (`http://ran-nssmf:8002`).
+**Tools.** Local: `record_intent`, `get_sla_status`, `update_intent_status`. Domain tools, discovered over MCP and prefixed with the owner agent: `cn_nssmf_apply_qos` / `cn_nssmf_revert_qos` / `cn_nssmf_query_nwdaf` / `cn_nssmf_check_sla` (`http://cn-nssmf:8001`) and `ran_nssmf_apply_resources` / `ran_nssmf_revert_resources` / `ran_nssmf_check_sla` (`http://ran-nssmf:8002`).
 
-**Regras determinísticas:**
-- *Data e fuso:* toda intenção chega ao LLM precedida da data/hora atual em `MINAS_TZ` (default `America/Sao_Paulo`); horário sem fuso é lido como local.
-- *Agendamento:* intenção cuja janela começa no futuro (mais de `ACTIVATION_GRACE_SECONDS`, 60 s) é gravada como `scheduled`, e as chamadas `*_apply_*` para ela são bloqueadas em código.
-- *Status final:* vem dos status estruturados dos domínios, não da resposta do modelo. Se um domínio falha, ou se só um dos dois foi acionado, os dois são revertidos e a intenção fica `failed`.
-- *Dedup:* um pedido igual a uma intenção recebida nos últimos 2 minutos não cria outra; intenções `reverted` ou `failed` não bloqueiam um pedido novo.
+**Deterministic rules:**
+- *Date and time zone:* every intent reaches the LLM preceded by the current date and time in `MINAS_TZ` (default `America/Sao_Paulo`). A time without a zone is read as local.
+- *Scheduling:* an intent whose window starts in the future (more than `ACTIVATION_GRACE_SECONDS`, 60 s) is recorded as `scheduled`, and `*_apply_*` calls for it are blocked in code.
+- *Final status:* comes from the structured statuses of the domains, not from the model's answer. If a domain fails, or only one of the two was called, both are reverted and the intent is `failed`.
+- *Dedup:* a request equal to an intent received in the last 2 minutes does not create another one. `reverted` or `failed` intents do not block a new request.
 
-**Scheduler (`scheduler.py`),** a cada `SCHEDULER_INTERVAL_SECONDS` (15 s):
-- *Ativação:* no `window_start`, manda as duas diretivas via MCP e marca `applied`/`degraded`/`failed`; se um lado falha, desfaz o outro. Janela que fecha sem ativação: reverte os dois domínios e marca `failed`.
-- *Reversão:* no `window_end`, chama `revert_qos`/`revert_resources` (determinísticos, sem LLM); só marca `reverted` quando os dois confirmam, senão tenta de novo.
-- *Limpeza:* intenção `failed` que ainda tem política ou alocação ativa é revertida a cada ciclo.
+**Window scheduler (`scheduler.py`),** every `SCHEDULER_INTERVAL_SECONDS` (15 s). It is a thread written for MINAS that polls the database, not a scheduling library:
+- *Activation:* at `window_start`, sends both directives over MCP and marks `applied`/`degraded`/`failed`. If one side fails, it undoes the other. A window that closes without activation: reverts both domains and marks `failed`.
+- *Reversion:* at `window_end`, calls `revert_qos`/`revert_resources` (deterministic, no LLM). It marks `reverted` only when both confirm, otherwise it retries.
+- *Cleanup:* a `failed` intent that still has an active policy or allocation is reverted at every cycle.
 
-**UC1, eventos (`POST /event`):** o monitor do CN-NSSMF avisa quando a NWDAF prevê demanda acima da garantia. O endpoint responde 202 e, em segundo plano, o LLM recebe um `## Event` para elevar a garantia a previsão × (1 + `UC1_HEADROOM`). Se a RAN só atende parte, a intenção fica `degraded` e é gravado um evento `sla_violation_predicted` (redistribuição entre fatias não implementada).
+**UC1, events (`POST /event`):** the CN-NSSMF monitor notifies when the NWDAF predicts demand above the guarantee. The endpoint answers 202 and, in the background, the LLM receives an `## Event` to raise the guarantee to prediction × (1 + `UC1_HEADROOM`). If the RAN fits only part of it, the intent becomes `degraded` and a `sla_violation_predicted` event is recorded (redistribution between slices is not implemented).
 
-**Monitor de SLA (`sla_monitor.py`):** a cada 30 s grava em `sla_samples` a vazão observada de cada fatia com intenção em vigor; após 3 amostras seguidas abaixo da garantia, evento `sla_violation`. Só tem sentido com tráfego oferecido na taxa-alvo.
+**SLA monitor (`sla_monitor.py`):** every 30 s it writes to `sla_samples` the observed throughput of each slice with an intent in force. After 3 consecutive samples below the guarantee, it emits a `sla_violation` event. It is only meaningful with traffic offered at the target rate.
 
-### CN-NSSMF (`agents/cn-nssmf/`)
+### CN-NSSMF, the core agent (`agents/cn-nssmf/`)
 
-Agente do núcleo. Servidor MCP (`:8001/mcp`) com as diretivas `apply_qos`, `revert_qos`, `query_nwdaf` e `check_sla`; cada chamada roda um loop ReAct próprio sobre as ferramentas internas:
+MCP server (`:8001/mcp`) with the directives `apply_qos`, `revert_qos`, `query_nwdaf`, and `check_sla`. Each call runs its own ReAct loop over the internal tools:
 
-| Ferramenta | O que faz |
+| Tool | What it does |
 |---|---|
-| `query_nwdaf` | Analytics da NWDAF via `Nnwdaf_AnalyticsInfo`; real p/ `SLICE_LOAD_LEVEL`, mock p/ os outros ou se a NWDAF estiver fora |
-| `configure_qos` | Define 5QI/GBR/MBR da fatia e grava em `policies`. Com `ENFORCEMENT_MODE=real`, antes de gravar, aplica o limite de DL na UPF (MBR = GBR). O 5QI/GBR não é provisionado no PCF/SMF |
-| `revert_qos` | Restaura a configuração anterior (determinístico quando chamado via MCP) |
-| `get_core_kpis` | Telemetria de núcleo mais recente da fatia |
-| `record_policy` | Complementa uma política que já está em vigor; não cria política nova |
+| `query_nwdaf` | NWDAF analytics via `Nnwdaf_AnalyticsInfo`; real for `SLICE_LOAD_LEVEL`, mock for the others or when the NWDAF is down |
+| `configure_qos` | Sets the slice 5QI/GBR/MBR and writes it to `policies`. With `ENFORCEMENT_MODE=real`, before writing, it applies the DL ceiling at the UPF (MBR = GBR). The 5QI/GBR is not provisioned in the PCF/SMF |
+| `revert_qos` | Restores the previous configuration (deterministic when called over MCP) |
+| `get_core_kpis` | Latest core telemetry of the slice |
+| `record_policy` | Completes a policy already in force; does not create a new one |
 
-Dentro de uma diretiva `apply_qos`, o GBR é fixado em código no alvo da intenção: se o orquestrador não mandou o alvo, o CN-NSSMF o lê da intenção, e `configure_qos` recusa qualquer GBR diferente (desligado com `GUARDRAILS_ENABLED=false`).
+Within an `apply_qos` directive, the GBR is fixed in code to the intent target. If the orchestrator agent did not send the target, the CN-NSSMF reads it from the intent, and `configure_qos` refuses any other GBR (disabled with `GUARDRAILS_ENABLED=false`).
 
-**Monitor do UC1 (`monitor.py`):** a cada `UC1_POLL_SECONDS` (30 s) consulta a NWDAF para a intenção sem janela mais recente de cada fatia em `UC1_SLICES` (default `2`). Se a demanda prevista passa da garantia + `UC1_MARGIN` (10 %), grava `predicted_exhaustion` e avisa o orquestrador. Previsão mock ou dado velho nunca dispara; no máximo um evento por intenção a cada `UC1_COOLDOWN_SECONDS` (300 s). `UC1_ENABLED=false` desliga (recomendado durante o benchmark).
+**UC1 monitor (`monitor.py`):** every `UC1_POLL_SECONDS` (30 s) it queries the NWDAF for the most recent intent without a window of each slice in `UC1_SLICES` (default `2`). If the predicted demand exceeds the guarantee + `UC1_MARGIN` (10 %), it records `predicted_exhaustion` and notifies the orchestrator agent. A mock prediction or stale data never triggers it, and there is at most one event per intent every `UC1_COOLDOWN_SECONDS` (300 s). `UC1_ENABLED=false` disables it (recommended during the benchmark).
 
-### RAN-NSSMF (`agents/ran-nssmf/`)
+### RAN-NSSMF, the RAN agent (`agents/ran-nssmf/`)
 
-Agente do rádio. Servidor MCP (`:8002/mcp`) com `apply_resources`, `revert_resources` e `check_sla`:
+MCP server (`:8002/mcp`) with `apply_resources`, `revert_resources`, and `check_sla`:
 
-| Ferramenta | O que faz |
+| Tool | What it does |
 |---|---|
-| `get_ran_kpis` | Agrega os últimos ~30 s de `ran_kpis` da fatia |
-| `get_slice_load` | Índice de carga da fatia (calcula e persiste se estiver defasado) |
-| `estimate_capacity` | PRBs necessários para o alvo e se cabem: capacidade da célula menos uso e reservas das outras fatias |
-| `allocate_prb` | Reserva PRBs da fatia e grava em `ran_allocations`; se o alvo não cabe, aloca o disponível e devolve `degraded`. Com `ENFORCEMENT_MODE=real`, antes de gravar, envia a reserva ao `gnb_slicer` |
-| `revert_prb` | Restaura a alocação anterior (determinístico quando chamado via MCP) |
+| `get_ran_kpis` | Aggregates the last ~30 s of `ran_kpis` of the slice |
+| `get_slice_load` | Load index of the slice (computes and persists it if stale) |
+| `estimate_capacity` | PRBs needed for the target and whether they fit: cell capacity minus the usage and reservations of the other slices |
+| `allocate_prb` | Reserves the slice PRBs and writes them to `ran_allocations`. If the target does not fit, it allocates what is available and returns `degraded`. With `ENFORCEMENT_MODE=real`, before writing, it sends the reservation to `gnb_slicer` |
+| `revert_prb` | Restores the previous allocation (deterministic when called over MCP) |
 
-Modelo da célula por env: `RAN_PRB_TOTAL` (default 51 = 20 MHz com SCS 30 kHz) e `RAN_MBPS_PER_PRB` (default 0,40), ou seja, 20,4 Mbps. No lab, ajustar à capacidade medida.
+Cell model from the environment: `RAN_PRB_TOTAL` (default 51 = 20 MHz with SCS 30 kHz) and `RAN_MBPS_PER_PRB` (default 0.40), that is, 20.4 Mbps. In the lab, set it to the measured capacity.
 
-### Baseline monolítico (`agents/monolithic/`)
+### Monolithic baseline (`agents/monolithic/`)
 
-Um único agente ReAct com as 13 ferramentas dos três agentes, o mesmo modelo, RAG, guardrails e regras de status/agendamento; muda só a estrutura (sem decomposição em diretivas nem MCP). Mesmo contrato `POST /intent` do orquestrador, na porta 8010. Como subir está no docstring de `agents/monolithic/main.py`.
+A single ReAct agent with the 13 tools of the three agents, the same model, RAG, guardrails, and status and scheduling rules. Only the structure changes (no decomposition into directives, no MCP). Same `POST /intent` contract as the orchestrator agent, on port 8010. How to start it is in the docstring of `agents/monolithic/main.py`.
 
 ### NWDAF (`agents/nwdaf/`)
 
-Microsserviço de analytics (não é agente ReAct), chamado pelo `query_nwdaf` do CN-NSSMF. `POST /analytics` no formato `Nnwdaf_AnalyticsInfo`:
+Analytics microservice (not a ReAct agent), called by the CN-NSSMF `query_nwdaf`. `POST /analytics` in the `Nnwdaf_AnalyticsInfo` format:
 
 ```bash
 curl -X POST localhost:8080/analytics -H 'content-type: application/json' \
   -d '{"analytics_id": "SLICE_LOAD_LEVEL", "sst": 2, "horizon_seconds": 60}'
 ```
 
-| `analytics_id` | Estado |
+| `analytics_id` | State |
 |---|---|
-| `SLICE_LOAD_LEVEL` | real: `RandomForestRegressor` (100 árvores, profundidade 6) treinado sob demanda sobre as últimas amostras de `core_kpis.thp_dl_mbps` da fatia (5 lags, 10 s), prevendo `horizon_seconds` à frente |
+| `SLICE_LOAD_LEVEL` | real: `RandomForestRegressor` (100 trees, depth 6) trained on demand on the latest `core_kpis.thp_dl_mbps` samples of the slice (5 lags, 10 s), predicting `horizon_seconds` ahead |
 | `NF_LOAD` / `USER_DATA_CONGESTION` / `ABNORMAL_BEHAVIOUR` | mock |
 
-Com histórico curto ou velho (`NWDAF_MAX_STALENESS_S`, 120 s), cai para mock com o motivo no `reason`. Variáveis: `NWDAF_N_LAGS` (5), `NWDAF_HISTORY_LIMIT` (500), `NWDAF_MIN_TRAINING_ROWS` (5 no serviço, 20 no RQ4), `NWDAF_SLICE_CAPACITY_MBPS` (default `RAN_PRB_TOTAL × RAN_MBPS_PER_PRB`).
+With a short or stale history (`NWDAF_MAX_STALENESS_S`, 120 s), it falls back to a mock with the cause in `reason`. Variables: `NWDAF_N_LAGS` (5), `NWDAF_HISTORY_LIMIT` (500), `NWDAF_MIN_TRAINING_ROWS` (5 in the service, 20 in RQ4), `NWDAF_SLICE_CAPACITY_MBPS` (default `RAN_PRB_TOTAL × RAN_MBPS_PER_PRB`).
 
 ### Collector (`agents/collector/`)
 
-A cada `COLLECT_INTERVAL` (10 s) grava uma linha por fatia em `core_kpis` e `ran_kpis`.
+Every `COLLECT_INTERVAL` (10 s) it writes one row per slice to `core_kpis` and `ran_kpis`.
 
-| Fonte | `core_kpis` | `ran_kpis` | Descrição |
+| Source | `core_kpis` | `ran_kpis` | Description |
 |---|:---:|:---:|---|
-| `prometheus` | ✔ (padrão) | ✔ | Vazão por fatia dos contadores das TUN da UPF (`upf-netdev`); UEs/sessões do AMF/SMF (agregado). RSRP/SINR/MCS/PRB ficam `NULL` |
-| `o1` | - | ✔ | NETCONF/YANG contra o gNB (TS 28.552); stub, não conectado |
-| `synthetic` | ✔ | ✔ | série com ciclo diário + AR(1) + picos (`synth.py`); usada no benchmark e no RQ4 |
-| `mock` | ✔ | ✔ (padrão) | ruído i.i.d., só para exercitar o pipeline |
+| `prometheus` | ✔ (default) | ✔ | Per-slice throughput from the UPF TUN counters (`upf-netdev`); UEs/sessions from the AMF/SMF (aggregate). RSRP/SINR/MCS/PRB stay `NULL` |
+| `o1` | - | ✔ | NETCONF/YANG against the gNB (TS 28.552); stub, not connected |
+| `synthetic` | ✔ | ✔ | series with a daily cycle + AR(1) + bursts (`synth.py`); used in the benchmark and in RQ4 |
+| `mock` | ✔ | ✔ (default) | i.i.d. noise, only to exercise the pipeline |
 
-Variáveis: `PROMETHEUS_URL`, `COLLECT_INTERVAL`, `SLICES` (`1,2`), `CORE_SOURCE`, `RAN_SOURCE`, `SLICE_TUN` (`1:ogstun,2:ogstun2`), `SYNTH_SEED`. Sem Prometheus, use `CORE_SOURCE=synthetic` ou `mock`, senão toda amostra de núcleo falha.
+Variables: `PROMETHEUS_URL`, `COLLECT_INTERVAL`, `SLICES` (`1,2`), `CORE_SOURCE`, `RAN_SOURCE`, `SLICE_TUN` (`1:ogstun,2:ogstun2`), `SYNTH_SEED`. Without Prometheus, use `CORE_SOURCE=synthetic` or `mock`, otherwise every core sample fails.
 
 ---
 
 ## Guardrails (`agents/guardrails.py`)
 
-Validação determinística antes de todo `dispatch_tool`, nos três agentes:
+Deterministic validation before every `dispatch_tool`, in the three agents:
 - SST ∈ {1, 2}
-- vazão > 0
+- throughput > 0
 - GBR ≤ MBR
 - 5QI ∈ [1, 86]
-- `window_end` > `window_start`, e `window_end` no futuro
-- vazão / GBR / MBR ≤ `GUARDRAIL_MAX_RATE_MBPS` (default 1000 = Session-AMBR provisionado)
+- `window_end` > `window_start`, and `window_end` in the future
+- throughput / GBR / MBR ≤ `GUARDRAIL_MAX_RATE_MBPS` (default 1000 = provisioned Session-AMBR)
 
-Uma violação volta ao modelo como `{"error": "...", "guardrail": true}`, e ele pode corrigir no passo seguinte. `GUARDRAILS_ENABLED=false` (ablação do RQ3) só registra a violação, sem bloquear.
+A violation goes back to the model as `{"error": "...", "guardrail": true}`, and the model can correct it in the next step. `GUARDRAILS_ENABLED=false` (RQ3 ablation) only logs the violation, without blocking.
 
 ## RAG (`agents/rag/`)
 
-Corpus de 35 trechos curados (TS 23.501, TS 23.288, TS 28.312, TS 38.300, TS 28.552, mais os padrões ReAct e MCP), embeddados com `BAAI/bge-small-en-v1.5`. Para cada intenção, o orquestrador injeta até 3 trechos com similaridade de cosseno ≥ 0,35. `RAG_ENABLED=false` (ablação do RQ3) roda o loop sem contexto recuperado.
+Corpus of 35 curated excerpts (TS 23.501, TS 23.288, TS 28.312, TS 38.300, TS 28.552, plus the ReAct and MCP patterns), embedded with `BAAI/bge-small-en-v1.5`. For each intent, the orchestrator agent injects up to 3 excerpts with cosine similarity ≥ 0.35. `RAG_ENABLED=false` (RQ3 ablation) runs the loop without retrieved context.
 
 ---
 
-## Enforcement real
+## Real enforcement
 
-`ENFORCEMENT_MODE=real` (padrão no `docker-compose.lab.yml`) faz cada decisão ser enviada ao equipamento **antes** de ser gravada. Se o envio falha, a ferramenta devolve erro ao agente e nada fica registrado como em vigor. Os dois pontos recebem sempre o estado completo (da fatia ou da célula), nunca um delta, para que um retry não desalinhe o testbed.
+`ENFORCEMENT_MODE=real` (default in `docker-compose.lab.yml`) sends each decision to the equipment **before** it is persisted. If sending fails, the tool returns an error to the agent and nothing is recorded as in force. Both enforcement points always receive the complete state (of the slice or of the cell), never a delta, so a retry cannot misalign the testbed.
 
-| Domínio | Ponto de enforcement | Como atua | Observação |
+| Domain | Enforcement point | How it acts | Note |
 |---|---|---|---|
-| Núcleo | `upf-shaper` (sidecar na UPF, `upf:9300`) | `tc tbf` no TUN da fatia (`ogstun`/`ogstun2`): limite de DL = MBR | É um **teto**, não uma garantia. `UPF_SHAPING=false` desliga o limite (necessário para o UC1 enxergar a demanda) |
-| Rádio | `gnb_slicer.py` (nativo no host do gNB, porta 8010) | grava `min_prb_policy_ratio = ceil(100·PRB/PRB_TOTAL)` da fatia no `sched_cfg` do srsRAN e reinicia o gNB | O srsRAN só lê essa config no start: cada mudança reinicia o gNB e derruba as UEs por alguns segundos. É aqui que a garantia se realiza |
+| Core | `upf-shaper` (UPF sidecar, `upf:9300`) | `tc tbf` on the slice TUN (`ogstun`/`ogstun2`): DL ceiling = MBR | A **ceiling**, not a guarantee. `UPF_SHAPING=false` disables it (needed for UC1 to see the demand) |
+| Radio | `gnb_slicer.py` (native on the gNB host, port 8010) | writes the slice `min_prb_policy_ratio = ceil(100·PRB/PRB_TOTAL)` into the gNB `sched_cfg` and restarts the gNB | The gNB reads this configuration only at start-up, so each change restarts the gNB and disconnects the UEs. This is where the guarantee is realized |
 
-Subir o slicer no host do gNB:
+Starting the slicer on the gNB host:
 
 ```bash
-sudo apt install -y python3-flask python3-yaml     # para o python3 do root
+sudo apt install -y python3-flask python3-yaml     # for root's python3
 sudo GNB_TEMPLATE=srsran/gnb.lab.yaml \
-     GNB_DIR=<pasta do gnb> GNB_BIN=./gnb GNB_CPUS=<núcleos do gNB> \
-     GNB_EXTRA_ARGS="-c <outros yml>" \
-     GNB_READY_PATTERN="<linha de pronto>" GNB_READY_TIMEOUT=120 \
+     GNB_DIR=<gnb folder> GNB_BIN=./gnb GNB_CPUS=<gNB cores> \
+     GNB_EXTRA_ARGS="-c <other yml>" \
+     GNB_READY_PATTERN="<ready line>" GNB_READY_TIMEOUT=120 \
      python3 agents/enforcers/gnb_slicer.py 2>&1 | tee gnb_slicer.log
 ```
 
-O `scripts/gnb_restart.sh` (padrão de `GNB_RESTART_CMD`) roda `taskset -c $GNB_CPUS $GNB_BIN -c /tmp/gnb.minas.yaml $GNB_EXTRA_ARGS` a partir de `GNB_DIR`. O slicer mantém as entradas de fatia do template (inclusive o SD de cada uma) e só preenche o `sched_cfg`; `GNB_SLICE_SD` força um SD único e normalmente fica vazio. Ao iniciar, ele avisa se o template não tem a lista de fatias em `GNB_SLICING_PATH` (default `cell_cfg.slicing`) ou se os SST não batem. Variáveis dos agentes: `GNB_SLICER_URL` (default `http://10.11.0.1:8010`), `ENFORCEMENT_TIMEOUT_S` (default 90, deve cobrir o restart do gNB), `UPF_SHAPING` (default `true`).
+`scripts/gnb_restart.sh` (default `GNB_RESTART_CMD`) runs `taskset -c $GNB_CPUS $GNB_BIN -c /tmp/gnb.minas.yaml $GNB_EXTRA_ARGS` from `GNB_DIR`. The slicer keeps the slice entries of the template (including the SD of each one) and only fills in `sched_cfg`. `GNB_SLICE_SD` forces a single SD and is normally empty. At start-up, it warns if the template has no slice list at `GNB_SLICING_PATH` (default `cell_cfg.slicing`) or if the SSTs do not match. Agent variables: `GNB_SLICER_URL` (default `http://10.11.0.1:8010`), `ENFORCEMENT_TIMEOUT_S` (default 90, must cover the gNB restart), `UPF_SHAPING` (default `true`).
 
 ---
 
-## Benchmark e experimentos
+## Benchmark and experiments
 
-Todos os scripts ficam em `agents/benchmark/`, rodam a partir da raiz do repo com `POSTGRES_HOST=localhost` e gravam em `agents/benchmark/results/` (não versionado). Durante as medições, desligue os monitores de fundo (`UC1_ENABLED=false SLA_MONITOR_ENABLED=false`) e mantenha `ENFORCEMENT_MODE=mock`.
+All scripts are in `agents/benchmark/`, run from the repository root with `POSTGRES_HOST=localhost`, and write to `agents/benchmark/results/` (not versioned). During the measurements, disable the background monitors (`UC1_ENABLED=false SLA_MONITOR_ENABLED=false`) and keep `ENFORCEMENT_MODE=mock`.
 
-| Script | O que mede | No TCC |
+| Script | What it measures | In the thesis |
 |---|---|---|
-| `intent_set.py` | 16 intenções com gabarito: UC1/UC2 × explícita/coloquial × válida/inválida | Workload |
-| `run_benchmark.py` | uma condição (modelo × RAG × guardrails), N repetições, JSONL | RQ1–RQ3 |
-| `run_llm_benchmark.py` | várias condições: recria os containers, espera `/health`, chama o `run_benchmark.py` | RQ1–RQ3 |
-| `run_rounds.py` | rodadas independentes das 6 condições, ordem embaralhada, retomável | RQ1–RQ3 (5 rodadas) |
-| `run_monolithic.py` / `compare_monolithic.py` | baseline com um agente só e comparação pareada com o MINAS | Monolithic Baseline |
-| `run_window_probes.py` | janelas curtas: agendamento, nada aplicado antes, atrasos de ativação e reversão | RQ1, ciclo de vida |
-| `run_fault_probes.py` | falha da RAN (sem tool-calling, fora a janela toda, fora no fim da janela) | Fault Probes |
-| `run_uc1_probes.py` | rampa/degrau de demanda sintética sobre uma intenção do UC1 | Proactive Adjustment |
-| `run_enforcement_probe.py` | só no lab: vazão por fatia na UPF antes, durante e depois de uma janela | Enforcement (`% LAB`) |
-| `classify_invalid.py` | classifica as respostas às intenções inválidas (recusa explicada, valor trocado, outro) | RQ3 |
-| `sla_report.py` | taxa de cumprimento de SLA a partir de `sla_samples` | só com tráfego real |
-| `plots.py` | figuras do capítulo de resultados (PDF + PNG) e os números por trás delas | Results |
+| `intent_set.py` | 16 intents with ground truth: UC1/UC2 × explicit/colloquial × valid/invalid (exported to `intents.json`) | Benchmark |
+| `run_benchmark.py` | one condition (model × RAG × guardrails), N repetitions, JSONL | RQ1–RQ3 |
+| `run_llm_benchmark.py` | several conditions: recreates the containers, waits for `/health`, calls `run_benchmark.py` | RQ1–RQ3 |
+| `run_rounds.py` | independent rounds of the 6 conditions, shuffled order, resumable | RQ1–RQ3 (5 rounds) |
+| `run_monolithic.py` / `compare_monolithic.py` | single-agent baseline and paired comparison with MINAS | Monolithic baseline |
+| `run_window_probes.py` | short windows: scheduling, nothing applied early, activation and reversion delays | Window probes |
+| `run_fault_probes.py` | RAN failure (no tool calling, down for the whole window, down at the end of the window) | Fault probes |
+| `run_uc1_probes.py` | ramp/step of synthetic demand over a UC1 intent | UC1 probes |
+| `run_enforcement_probe.py` | per-slice throughput at the UPF before, during, and after a window | Enforcement probe |
+| `lab_analysis.py` | lab cell capacity and lifecycle figures from the collected lab data | Enforcement probe (lab) |
+| `classify_invalid.py` | classifies the answers to the invalid intents (explained refusal, replaced value, other) | RQ3 |
+| `sla_report.py` | SLA compliance rate from `sla_samples` | only with real traffic |
+| `plots.py` | figures of the results section (PDF + PNG) and the numbers behind them | Results |
 
-O RQ4 (preditores) fica em `agents/nwdaf/benchmark_rq4.py`.
+RQ4 (load predictors) is in `agents/nwdaf/benchmark_rq4.py`.
 
 ```bash
-# RQ1-RQ3: 5 rodadas x 6 condições x 16 intenções x 3 repetições
+# RQ1-RQ3: 5 rounds x 6 conditions x 16 intents x 3 repetitions
 UC1_ENABLED=false SLA_MONITOR_ENABLED=false python agents/benchmark/run_rounds.py --rounds 5 --first 1
 
-# baseline monolítico (agente em :8010, monitores da stack parados)
+# monolithic baseline (agent on :8010, stack monitors stopped)
 python agents/benchmark/run_monolithic.py --rounds 5
 python agents/benchmark/compare_monolithic.py
 
@@ -436,13 +440,13 @@ python agents/benchmark/run_window_probes.py --probes 4
 python agents/benchmark/run_fault_probes.py --reps 2
 python agents/benchmark/run_uc1_probes.py --reps 3
 
-# RQ4 sobre histórico sintético num banco dedicado
+# RQ4 over synthetic history in a dedicated database
 docker exec postgres psql -U minas -d minas -c "CREATE DATABASE minas_synth"
 docker exec -i postgres psql -U minas -d minas_synth < agents/schema.sql
 POSTGRES_DB=minas_synth python agents/collector/backfill_synthetic.py --days 7
 POSTGRES_DB=minas_synth NWDAF_HISTORY_LIMIT=20000 python agents/nwdaf/benchmark_rq4.py
 
-# figuras
+# figures
 python agents/benchmark/plots.py \
   --rounds agents/benchmark/results/run2 agents/benchmark/results/rounds/r* \
   --probes agents/benchmark/results/probes-final/window-probes_rep*.jsonl \
@@ -451,27 +455,52 @@ python agents/benchmark/plots.py \
 python agents/benchmark/plots.py --enforcement <enforcement-probe.jsonl> --out tcc2/figures/results
 ```
 
-**Imagens.** A imagem medida no benchmark está guardada como `minas-agent:bench-c9781c3`; `minas-agent:local` tem as correções posteriores (D13–D16 do TCC: rollback no fechamento da janela, GBR do core fixado no alvo, status final pelos domínios, `record_policy` só sobre política em vigor). Para reproduzir os números do TCC, use a imagem guardada.
+**Images.** The image measured in the benchmark is kept locally as `minas-agent:bench-c9781c3`. `minas-agent:local` has the later corrections (D13–D16: rollback when the window closes, core GBR fixed to the target, final status from the domains, `record_policy` only over a policy in force). To reproduce the benchmark numbers, use commit `c9781c3`.
+
+### Benchmark intents
+
+The benchmark was defined by the author for this work, since the intent sets of related works do not label the expected configuration of the core and the radio domain. It has 16 intents written by hand, balanced over three factors with two intents per combination: use case (UC1 on SST=2, UC2 on SST=1), phrasing (explicit, colloquial), and validity. The full ground truth (slice, target, window, required and forbidden tools, expected outcome, reason for invalidity) is in [`agents/benchmark/intents.json`](agents/benchmark/intents.json), exported from [`agents/benchmark/intent_set.py`](agents/benchmark/intent_set.py), which the benchmark scripts import. Dates are relative to the day of the run: `{D+k}` is k days after it, in the operator time zone.
+
+| ID | Intent | Expected outcome |
+|---|---|---|
+| wq-explicit-valid-1 | Guarantee 25 Mbps downlink on the eMBB slice (SST=1) from 18:00 to 22:00 on {D+3}. | scheduled |
+| wq-explicit-valid-2 | Set a 40 Mbps throughput floor for SST=1 between 08:00 and 09:30 on {D+4}. | scheduled |
+| wq-colloquial-valid-1 | The streaming slice needs about 20 Mbps for the evening rush, from 18:00 to 22:00 on {D+5}. | scheduled |
+| wq-colloquial-valid-2 | Streaming's been laggy in the mornings — keep it at a comfortable 35 Mbps between 8 and 9:30 on {D+6}. | scheduled |
+| wq-explicit-invalid-1 | Guarantee 20 Mbps on SST=1 from 22:00 to 18:00 on {D+3}, both times on that same day. | refused or corrected (reversed window) |
+| wq-explicit-invalid-2 | Guarantee 20 Mbps on slice SST=5 from 18:00 to 22:00 on {D+3}. | refused or corrected (unsupported SST) |
+| wq-colloquial-invalid-1 | Just kill the guarantee on the streaming slice, set it to 0 Mbps, from 18:00 to 22:00 on {D+3}. | refused or corrected (non-positive rate) |
+| wq-colloquial-invalid-2 | Keep the streaming slice boosted to about 20 Mbps from 9 PM to 6 PM on {D+3}, same day. | refused or corrected (reversed window) |
+| pra-explicit-valid-1 | Proactively adjust resources for the URLLC slice (SST=2) to sustain 10 Mbps based on predicted load. | applied (degraded if the RAN cannot fit it) |
+| pra-explicit-valid-2 | Reserve capacity on SST=2 for a predicted 15 Mbps peak in demand. | applied (degraded if the RAN cannot fit it) |
+| pra-colloquial-valid-1 | The mission-critical slice might spike soon — make sure it can handle around 12 Mbps. | applied (degraded if the RAN cannot fit it) |
+| pra-colloquial-valid-2 | Keep the low-latency slice ready for a bump to roughly 18 Mbps if the load prediction calls for it. | applied (degraded if the RAN cannot fit it) |
+| pra-explicit-invalid-1 | Proactively adjust resources for slice SST=6 to sustain 10 Mbps based on predicted load. | refused or corrected (unsupported SST) |
+| pra-explicit-invalid-2 | Reserve capacity on SST=2 for a predicted -5 Mbps peak in demand. | refused or corrected (non-positive rate) |
+| pra-colloquial-invalid-1 | The IoT slice might need more headroom soon — get it ready. | refused or corrected (unsupported SST) |
+| pra-colloquial-invalid-2 | Basically turn off any guarantee on the critical slice — set it to 0 Mbps proactively. | refused or corrected (non-positive rate) |
+
+`wq-*` = UC2 (scheduled QoS policy, SST=1), `pra-*` = UC1 (predictive resource adjustment, SST=2). To add intents, append entries to `INTENTS` in `intent_set.py` (the module checks their shape at import) and regenerate `intents.json`.
 
 ---
 
-## Banco de dados (PostgreSQL)
+## Database (PostgreSQL)
 
-Schema em `agents/schema.sql`:
+Schema in `agents/schema.sql`:
 
-| Tabela | Descrição |
+| Table | Description |
 |---|---|
-| `intents` | Intenções: fatia, alvo, janela, status (`scheduled`/`applied`/`degraded`/`failed`/`reverted`) |
-| `policies` | Políticas de QoS por intenção (5QI, GBR, MBR) e seu ciclo de vida |
-| `ran_allocations` | Reservas de PRB por intenção (permite `revert_prb` rastreável) |
-| `core_kpis` | Métricas do núcleo por fatia (UEs, sessões PDU, vazão) |
-| `ran_kpis` | Métricas de rádio por fatia (RSRP, SINR, PRBs, vazão) |
-| `slice_load` | Índice de carga calculado por fatia |
-| `events` | Avisos do UC1 (`predicted_exhaustion`) e violações de SLA (`sla_violation`, `sla_violation_predicted`) |
-| `sla_samples` | Amostras do monitor de SLA por intenção em vigor |
-| `negotiations` | Rodadas de negociação CN-NSSMF ↔ RAN-NSSMF (não usada pelo fluxo atual) |
+| `intents` | Intents: slice, target, window, status (`scheduled`/`applied`/`degraded`/`failed`/`reverted`) |
+| `policies` | QoS policies per intent (5QI, GBR, MBR) and their lifecycle |
+| `ran_allocations` | PRB reservations per intent (keeps `revert_prb` traceable) |
+| `core_kpis` | Core metrics per slice (UEs, PDU sessions, throughput) |
+| `ran_kpis` | Radio metrics per slice (RSRP, SINR, PRBs, throughput) |
+| `slice_load` | Computed load index per slice |
+| `events` | UC1 notices (`predicted_exhaustion`) and SLA violations (`sla_violation`, `sla_violation_predicted`) |
+| `sla_samples` | SLA monitor samples per intent in force |
+| `negotiations` | CN-NSSMF ↔ RAN-NSSMF negotiation rounds (not used by the current flow) |
 
-`schema.sql` só roda quando o volume do Postgres é criado. Para um banco que já existe, aplique as migrações em ordem (são idempotentes):
+`schema.sql` only runs when the Postgres volume is created. For an existing database, apply the migrations in order (they are idempotent):
 
 ```bash
 for f in agents/migrations/*.sql; do docker exec -i postgres psql -U minas -d minas < "$f"; done
@@ -479,59 +508,59 @@ for f in agents/migrations/*.sql; do docker exec -i postgres psql -U minas -d mi
 
 ---
 
-## Apêndice
+## Appendix
 
-Material complementar do TCC II que não coube no texto.
+Supplementary material of the thesis that did not fit in the text.
 
-### A. Defeitos encontrados durante a validação
+### A. Defects found during validation
 
-Construir e rodar o sistema expôs dezesseis defeitos. Os defeitos D1 a D11 foram corrigidos antes das medições do benchmark. Os defeitos D12 a D16 foram encontrados depois, pelos probes e pelo ensaio do laboratório. O D12 não foi corrigido de propósito, para não mudar o sistema que o benchmark mediu.
+Building and running the system exposed sixteen defects. D1 to D11 were corrected before the benchmark measurements. D12 to D16 were found later, by the probes and the laboratory trial. D12 was deliberately not corrected, so as not to change the system that the benchmark measured.
 
-| ID | Defeito | Consequência |
+| ID | Defect | Consequence |
 |---|---|---|
-| D1 | O histórico do loop *ReAct* omitia os registros das chamadas de ferramenta do próprio modelo | Chamadas repetidas, ou ações narradas em texto em vez de executadas |
-| D2 | Uma conexão de banco compartilhada por threads concorrentes | O scheduler travava sem erro e as reversões paravam |
-| D3 | O medidor de uso de PRB era somado numa janela deslizante | A estimativa de capacidade caía a zero e toda alocação virava `degraded` |
-| D4 | Sessões de banco sem autocommit | Timestamps congelados, e uma sessão abortada travava o scheduler |
-| D5 | A reversão era aceita como feita quando nenhum erro voltava | Intenções marcadas `reverted` sem nada revertido |
-| D6 | A admissão da RAN ignorava as reservas das outras fatias | Duas fatias podiam receber a célula inteira cada uma |
-| D7 | Um fallback de status marcava `applied` sem olhar a resposta da RAN | Cumprimento superestimado para alvos inviáveis |
-| D8 | Timestamps sem fuso lidos como UTC | Janelas deslocadas em três horas |
-| D9 | Diretivas só de leitura ofereciam todas as ferramentas | A política do core era alterada ao responder uma consulta de carga |
-| D10 | Contexto padrão de 4.096 tokens e nenhum limite de geração | 2,8% das chamadas de inferência truncadas, e timeouts |
-| D11 | Uma janela de exemplo no cabeçalho de data do prompt | A janela era copiada para intenções que não tinham janela |
-| D12 | O resultado de um domínio era lido da última chamada de configuração, mesmo rejeitada | Uma ativação correta marcada `failed` e revertida (não corrigido) |
-| D13 | O scheduler falhava uma intenção com a janela já fechada sem fazer rollback | Política do core em vigor indefinidamente quando a RAN ficava fora a janela toda |
-| D14 | O GBR gravado pelo core não era conferido contra o alvo da intenção | Taxa escolhida pelo modelo do core quando a diretiva omitia o alvo |
-| D15 | O status final de uma intenção imediata vinha da resposta do modelo | Intenção `applied` com um domínio falho ou nunca acionado |
-| D16 | Registro de política permitido sem configuração em vigor | Política mostrada como ativa que a rede nunca recebeu |
+| D1 | The *ReAct* loop history omitted the records of the model's own tool calls | Repeated calls, or actions narrated in text instead of executed |
+| D2 | One database connection shared by concurrent threads | The scheduler hung without an error and reversions stopped |
+| D3 | The PRB usage meter was summed over a sliding window | The capacity estimate dropped to zero and every allocation became `degraded` |
+| D4 | Database sessions without autocommit | Frozen timestamps, and an aborted session hung the scheduler |
+| D5 | A reversion was accepted as done when no error came back | Intents marked `reverted` with nothing reverted |
+| D6 | RAN admission ignored the reservations of the other slices | Two slices could each receive the whole cell |
+| D7 | A status fallback marked `applied` without checking the RAN answer | Fulfilment overestimated for infeasible targets |
+| D8 | Timestamps without a zone read as UTC | Windows shifted by three hours |
+| D9 | Read-only directives offered every tool | The core policy was changed while answering a load query |
+| D10 | Default context of 4,096 tokens and no generation limit | 2.8% of inference calls truncated, and timeouts |
+| D11 | An example window in the date header of the prompt | The window was copied into intents that had no window |
+| D12 | A domain's result was read from its last configuration call, even a rejected one | A correct activation marked `failed` and rolled back (not corrected) |
+| D13 | The scheduler failed an intent whose window had closed without rolling back | Core policy in force indefinitely when the RAN agent was down for the whole window |
+| D14 | The GBR written by the core agent was not checked against the intent target | Rate chosen by the core agent's model when the directive omitted the target |
+| D15 | The final status of an immediate intent came from the model's answer | Intent `applied` with a domain that failed or was never called |
+| D16 | Policy recording allowed without a configuration in force | Policy shown as active that the network never received |
 
-### B. Figuras complementares do benchmark
+### B. Supplementary benchmark figures
 
-Todas as figuras cobrem as 5 rodadas, com 240 execuções por condição. Elas foram geradas com `agents/benchmark/plots.py`.
+All figures cover the 5 rounds, with 240 executions per condition. They were generated with `agents/benchmark/plots.py`.
 
-**Seleção de ferramentas e extração de parâmetros.** Fração das execuções válidas em que o orquestrador chamou todas as ferramentas exigidas e nenhuma proibida, e em que fatia, alvo e janela gravados batem com o gabarito. Os pontos são as rodadas, e as barras de erro são intervalos de 95% por bootstrap sobre as intenções.
+**Tool selection and parameter extraction.** Fraction of the valid executions in which the orchestrator agent called every required tool and no forbidden one, and in which the recorded slice, target, and window match the ground truth. Dots are rounds, and error bars are 95% bootstrap intervals over intents.
 
-![Seleção de ferramentas e extração](docs/figures/fig-bench-toolsel.png)
+![Tool selection and extraction](docs/figures/fig-bench-toolsel.png)
 
-**Latência por intenção.** Tempo do envio até a resposta do orquestrador, em escala logarítmica. As intenções com janela são só registradas e respondem em poucos segundos, enquanto as do UC1 passam pelos dois agentes de domínio e formam a cauda superior.
+**Latency per intent.** Time from submission to the answer of the orchestrator agent, on a log scale. Windowed intents are only recorded and answer in a few seconds, while UC1 intents pass through both domain agents and form the upper tail.
 
-![Latência](docs/figures/fig-bench-latency.png)
+![Latency](docs/figures/fig-bench-latency.png)
 
-**Chamadas redundantes por intenção.** Chamadas repetidas com argumentos idênticos pelo mesmo agente. A maioria das execuções não tem nenhuma, e as que passam de 50 são repetições contra um alvo inviável.
+**Redundant calls per intent.** Repeated calls with identical arguments by the same agent. Most executions have none, and those above 50 are repetitions against an infeasible target.
 
-![Chamadas redundantes](docs/figures/fig-bench-redundant.png)
+![Redundant calls](docs/figures/fig-bench-redundant.png)
 
-**Valores inválidos que entraram em vigor.** Fração das execuções inválidas em que o valor ofensivo chegou a um estado em vigor, por tipo de valor. Sem guardrails, os três tipos passam.
+**Invalid values that came into force.** Fraction of the invalid executions in which the offending value reached a state in force, per kind of value. Without guardrails, all three kinds get through.
 
-![Vazamentos de valores inválidos](docs/figures/fig-bench-leaks.png)
+![Leaks of invalid values](docs/figures/fig-bench-leaks.png)
 
-**Sucesso por rodada.** Taxa de sucesso nas intenções válidas em cada uma das 5 rodadas, por condição.
+**Success per round.** Success rate on the valid intents in each of the 5 rounds, per condition.
 
-![Sucesso por rodada](docs/figures/fig-bench-rounds.png)
+![Success per round](docs/figures/fig-bench-rounds.png)
 
-### C. Enforcement em testbed emulado
+### C. Enforcement in the emulated testbed
 
-Cinco execuções do `run_enforcement_probe.py` com UPF real e limite de vazão por `tc`, mas com o gNB e os UEs emulados. Uma intenção de 5 Mbps na SST 1 com janela de três minutos baixou a vazão medida da fatia de 15,35 para 5,00 Mbps e a devolveu depois da janela, sem afetar a SST 2. Os dados estão em `agents/benchmark/results/emulated-enforcement/`, que não é versionado.
+Five runs of `run_enforcement_probe.py` with a real UPF and a `tc` rate ceiling, but with an emulated gNB and UEs. A 5 Mbps intent on SST 1 with a three-minute window brought the measured throughput of the slice from 15.35 to 5.00 Mbps and restored it after the window, without affecting SST 2. The data are in `agents/benchmark/results/emulated-enforcement/`, which is not versioned.
 
-![Enforcement emulado](docs/figures/fig-enforcement-emulated.png)
+![Emulated enforcement](docs/figures/fig-enforcement-emulated.png)

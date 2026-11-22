@@ -129,16 +129,16 @@ done
 cat > "$OUT/notes.md" <<EOF
 # ${LABEL} — $(date '+%Y-%m-%d %H:%M')
 
-- Experimento (E0/E1/E2/E3/E4):
-- UEs usadas (qual SIM/IMSI, qual fatia, IP) e comando do ue_traffic.py:
-- Alvo da intenção / janela:
+- Experiment (E0/E1/E2/E3/E4):
+- UEs used (which SIM/IMSI, which slice, IP) and ue_traffic.py command:
+- Intent target / window:
 - UPF_SHAPING:
-- Vazão antes / durante / depois (o que viu no terminal):
-- Restart do gNB: quanto tempo? as UEs voltaram sozinhas? quanto tempo sem tráfego?
-- Algo estranho (erros, UE caiu, gNB não subiu, etc.):
-- ue/ tem a pasta do ue_traffic.py desta repetição? (s/n)
+- Throughput before / during / after (as seen in the terminal):
+- gNB restart: how long? did the UEs come back on their own? how long without traffic?
+- Anything odd (errors, UE dropped, gNB did not start, etc.):
+- does ue/ have the ue_traffic.py folder of this repetition? (y/n)
 EOF
-ok "notes.md (preencha agora, enquanto lembra)"
+ok "notes.md (fill it in now, while you remember)"
 
 echo
 if [ "$NMISS" -gt 0 ]; then

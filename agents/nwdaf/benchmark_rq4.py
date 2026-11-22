@@ -1,9 +1,9 @@
 """
 RQ4 benchmark — RandomForest vs. GradientBoosting vs. LSTM on core_kpis.
 
-Promised in TCC I cap. 4 ("Algoritmo de predicao"):
-  "Como parte da avaliacao experimental, sera realizada uma comparacao com
-   Gradient Boosting e redes LSTM, a fim de validar a escolha a posteriori."
+Promised in TCC I, chapter 4 (prediction algorithm): as part of the
+experimental evaluation, compare with Gradient Boosting and LSTM networks
+to validate the choice a posteriori.
 
 Runs offline against a live Postgres instance (no Flask, no Ollama).
 Reuses the exact same lag-window dataset construction as nwdaf/main.py so

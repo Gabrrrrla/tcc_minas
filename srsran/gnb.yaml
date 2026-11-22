@@ -1,25 +1,25 @@
 # # srsRAN gNB — MINAS testbed
 #
-# #   GNB_BIND_ADDR  > IP do servidor do lab na rede de fronthaul (ex: 192.168.x.x)
-# #   RU_MAC         > MAC da RU Liteon Flexi  (ver: ip link show)
-# #   DU_MAC         > MAC da placa Intel DPDK do servidor (ver: ip link show)
-# #   FRONTHAUL_IF   > nome da interface de rede conectada à RU (ver: ip link show)
-# #   DL_ARFCN       > confirmar com o Miguel (depende da frequência configurada na Liteon)
-# #   BAND           > confirmar com o Miguel
+# #   GNB_BIND_ADDR  > IP of the lab server on the fronthaul network (e.g. 192.168.x.x)
+# #   RU_MAC         > MAC of the LiteOn Flexi RU (see: ip link show)
+# #   DU_MAC         > MAC of the server's Intel DPDK NIC (see: ip link show)
+# #   FRONTHAUL_IF   > name of the network interface connected to the RU (see: ip link show)
+# #   DL_ARFCN       > check with the lab staff (depends on the frequency configured on the RU)
+# #   BAND           > check with the lab staff
 # gnb_id: 1
 # ran_node_name: minas-gnb
 #
-# # N2/N3 direto pela bridge do Docker (docker-compose.lab.yml), sem NAT:
-# #   o host alcança a rede minas-net (10.11.0.0/24) e 10.11.0.1 é o gateway
-# #   da bridge no host. O UPF anuncia GTP-U em 10.11.0.22 (open5gs/upf.lab.yaml).
-# #   (127.0.0.1 via porta publicada também sobe o NGAP, mas SCTP atrás do NAT
-# #   do Docker e o GTP-U anunciado em loopback são frágeis.)
-# #   Antes: sudo modprobe sctp   (scripts/lab_preflight.sh confere)
-# #   Chaves exatas dependem da versão do srsRAN Project — conferir com o
-# #   gnb.yaml que o Miguel já usa com a Liteon.
+# # N2/N3 directly over the Docker bridge (docker-compose.lab.yml), without NAT:
+# #   the host reaches the minas-net network (10.11.0.0/24) and 10.11.0.1 is the
+# #   bridge gateway on the host. The UPF advertises GTP-U on 10.11.0.22 (open5gs/upf.lab.yaml).
+# #   (127.0.0.1 through a published port also brings NGAP up, but SCTP behind the
+# #   Docker NAT and GTP-U advertised on loopback are fragile.)
+# #   Before: sudo modprobe sctp   (checked by scripts/lab_preflight.sh)
+# #   The exact keys depend on the srsRAN Project version — check against the
+# #   gnb.yaml already used in the lab with the RU.
 # amf:
-#   addr: 10.11.0.20      # AMF (container) na minas-net
-#   bind_addr: 10.11.0.1  # gateway da bridge minas-net no host
+#   addr: 10.11.0.20      # AMF (container) on minas-net
+#   bind_addr: 10.11.0.1  # minas-net bridge gateway on the host
 #
 # ru_ofh:
 #   t1a_max_cp_dl: 500
@@ -50,11 +50,11 @@
 #   nof_antennas_ul: 1
 #   nof_antennas_dl: 1
 #
-# # PLMN/TAC/S-NSSAI têm que bater com open5gs/amf.yaml, com o IMSI dos SIMs e
-# # com scripts/provision.js (00101, TAC 1, SST 1 e 2 sem SD).
-# # Divisão de PRB por slice: versões recentes do srsRAN Project aceitam
-# # sched_cfg por slice (estático — mudar exige reiniciar o gNB). É o ponto
-# # onde um enforcement real do allocate_prb (RAN-NSSMF) atuaria.
+# # PLMN/TAC/S-NSSAI must match open5gs/amf.yaml, the IMSI of the SIMs, and
+# # scripts/provision.js (00101, TAC 1, SST 1 and 2 without SD).
+# # PRB split per slice: recent srsRAN Project versions accept
+# # sched_cfg per slice (static — changing it requires restarting the gNB). This is
+# # where real enforcement of allocate_prb (RAN-NSSMF) acts.
 # slicing:
 #   - sst: 1
 #     # sched_cfg:

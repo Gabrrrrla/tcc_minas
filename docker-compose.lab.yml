@@ -81,7 +81,7 @@ services:
 
   # RAN: gnb_slicer.py runs natively on the host (next to the gNB), port 8010,
   # reached through the minas-net bridge gateway. Start it before the agents:
-  #   sudo GNB_TEMPLATE=<gnb.yaml do lab> python3 agents/enforcers/gnb_slicer.py
+  #   sudo GNB_TEMPLATE=<lab gnb.yaml> python3 agents/enforcers/gnb_slicer.py
   cn-nssmf:
     ports: !reset []
     environment:

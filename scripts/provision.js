@@ -1,10 +1,10 @@
 // Provisions test subscribers into Open5GS MongoDB.
 // Runs automatically on docker compose up via the provision service.
 //
-// UE 1 (IMSI 001010000000001): assinado nas duas slices — SST=1 (eMBB/internet) e SST=2 (URLLC/slice2)
-// UE 2 (IMSI 001010000000002): assinado apenas na SST=2 (slice de missão crítica, UC1)
+// UE 1 (IMSI 001010000000001): subscribed to both slices — SST=1 (eMBB/internet) and SST=2 (URLLC/slice2)
+// UE 2 (IMSI 001010000000002): subscribed only to SST=2 (mission-critical slice, UC1)
 //
-// Credenciais de TESTE — substituir pelos valores reais dos SIM cards antes de ir ao lab
+// TEST credentials — replace with the real SIM card values before going to the lab
 
 db = connect('mongodb://mongo/open5gs');
 

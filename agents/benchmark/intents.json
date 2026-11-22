@@ -1,0 +1,337 @@
+{
+  "description": "Benchmark of 16 operator intents used in the MINAS evaluation. Dates are relative to the day of the run: {D+k} is k days after it, in the operator's time zone (MINAS_TZ). Source of truth: agents/benchmark/intent_set.py.",
+  "intents": [
+    {
+      "id": "wq-explicit-valid-1",
+      "text": "Guarantee 25 Mbps downlink on the eMBB slice (SST=1) from 18:00 to 22:00 on {D+3}.",
+      "use_case": "UC2",
+      "phrasing": "explicit",
+      "validity": "valid",
+      "expected_sst": 1,
+      "expected_target_mbps": 25.0,
+      "expected_window": {
+        "day": "D+3",
+        "start": "18:00",
+        "end": "22:00"
+      },
+      "tools_required": [
+        "record_intent"
+      ],
+      "tools_forbidden": [
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "expected_outcome": "scheduled",
+      "invalid_reason": null
+    },
+    {
+      "id": "wq-explicit-valid-2",
+      "text": "Set a 40 Mbps throughput floor for SST=1 between 08:00 and 09:30 on {D+4}.",
+      "use_case": "UC2",
+      "phrasing": "explicit",
+      "validity": "valid",
+      "expected_sst": 1,
+      "expected_target_mbps": 40.0,
+      "expected_window": {
+        "day": "D+4",
+        "start": "08:00",
+        "end": "09:30"
+      },
+      "tools_required": [
+        "record_intent"
+      ],
+      "tools_forbidden": [
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "expected_outcome": "scheduled",
+      "invalid_reason": null
+    },
+    {
+      "id": "wq-colloquial-valid-1",
+      "text": "The streaming slice needs about 20 Mbps for the evening rush, from 18:00 to 22:00 on {D+5}.",
+      "use_case": "UC2",
+      "phrasing": "colloquial",
+      "validity": "valid",
+      "expected_sst": 1,
+      "expected_target_mbps": 20.0,
+      "expected_window": {
+        "day": "D+5",
+        "start": "18:00",
+        "end": "22:00"
+      },
+      "tools_required": [
+        "record_intent"
+      ],
+      "tools_forbidden": [
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "expected_outcome": "scheduled",
+      "invalid_reason": null
+    },
+    {
+      "id": "wq-colloquial-valid-2",
+      "text": "Streaming's been laggy in the mornings — keep it at a comfortable 35 Mbps between 8 and 9:30 on {D+6}.",
+      "use_case": "UC2",
+      "phrasing": "colloquial",
+      "validity": "valid",
+      "expected_sst": 1,
+      "expected_target_mbps": 35.0,
+      "expected_window": {
+        "day": "D+6",
+        "start": "08:00",
+        "end": "09:30"
+      },
+      "tools_required": [
+        "record_intent"
+      ],
+      "tools_forbidden": [
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "expected_outcome": "scheduled",
+      "invalid_reason": null
+    },
+    {
+      "id": "wq-explicit-invalid-1",
+      "text": "Guarantee 20 Mbps on SST=1 from 22:00 to 18:00 on {D+3}, both times on that same day.",
+      "use_case": "UC2",
+      "phrasing": "explicit",
+      "validity": "invalid",
+      "expected_sst": 1,
+      "expected_target_mbps": 20.0,
+      "expected_window": {
+        "day": "D+3",
+        "start": "22:00",
+        "end": "18:00"
+      },
+      "tools_required": [
+        "record_intent"
+      ],
+      "tools_forbidden": [
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "expected_outcome": "refused_or_corrected",
+      "invalid_reason": "window_end before window_start (explicitly same day)"
+    },
+    {
+      "id": "wq-explicit-invalid-2",
+      "text": "Guarantee 20 Mbps on slice SST=5 from 18:00 to 22:00 on {D+3}.",
+      "use_case": "UC2",
+      "phrasing": "explicit",
+      "validity": "invalid",
+      "expected_sst": 5,
+      "expected_target_mbps": 20.0,
+      "expected_window": {
+        "day": "D+3",
+        "start": "18:00",
+        "end": "22:00"
+      },
+      "tools_required": [
+        "record_intent"
+      ],
+      "tools_forbidden": [
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "expected_outcome": "refused_or_corrected",
+      "invalid_reason": "unsupported SST (only 1 and 2 are provisioned)"
+    },
+    {
+      "id": "wq-colloquial-invalid-1",
+      "text": "Just kill the guarantee on the streaming slice, set it to 0 Mbps, from 18:00 to 22:00 on {D+3}.",
+      "use_case": "UC2",
+      "phrasing": "colloquial",
+      "validity": "invalid",
+      "expected_sst": 1,
+      "expected_target_mbps": 0.0,
+      "expected_window": {
+        "day": "D+3",
+        "start": "18:00",
+        "end": "22:00"
+      },
+      "tools_required": [
+        "record_intent"
+      ],
+      "tools_forbidden": [
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "expected_outcome": "refused_or_corrected",
+      "invalid_reason": "non-positive target_thp_mbps"
+    },
+    {
+      "id": "wq-colloquial-invalid-2",
+      "text": "Keep the streaming slice boosted to about 20 Mbps from 9 PM to 6 PM on {D+3}, same day.",
+      "use_case": "UC2",
+      "phrasing": "colloquial",
+      "validity": "invalid",
+      "expected_sst": 1,
+      "expected_target_mbps": 20.0,
+      "expected_window": {
+        "day": "D+3",
+        "start": "21:00",
+        "end": "18:00"
+      },
+      "tools_required": [
+        "record_intent"
+      ],
+      "tools_forbidden": [
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "expected_outcome": "refused_or_corrected",
+      "invalid_reason": "window_end before window_start (explicitly same day)"
+    },
+    {
+      "id": "pra-explicit-valid-1",
+      "text": "Proactively adjust resources for the URLLC slice (SST=2) to sustain 10 Mbps based on predicted load.",
+      "use_case": "UC1",
+      "phrasing": "explicit",
+      "validity": "valid",
+      "expected_sst": 2,
+      "expected_target_mbps": 10.0,
+      "expected_window": null,
+      "tools_required": [
+        "record_intent",
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "tools_forbidden": [],
+      "expected_outcome": "applied",
+      "invalid_reason": null
+    },
+    {
+      "id": "pra-explicit-valid-2",
+      "text": "Reserve capacity on SST=2 for a predicted 15 Mbps peak in demand.",
+      "use_case": "UC1",
+      "phrasing": "explicit",
+      "validity": "valid",
+      "expected_sst": 2,
+      "expected_target_mbps": 15.0,
+      "expected_window": null,
+      "tools_required": [
+        "record_intent",
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "tools_forbidden": [],
+      "expected_outcome": "applied",
+      "invalid_reason": null
+    },
+    {
+      "id": "pra-colloquial-valid-1",
+      "text": "The mission-critical slice might spike soon — make sure it can handle around 12 Mbps.",
+      "use_case": "UC1",
+      "phrasing": "colloquial",
+      "validity": "valid",
+      "expected_sst": 2,
+      "expected_target_mbps": 12.0,
+      "expected_window": null,
+      "tools_required": [
+        "record_intent",
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "tools_forbidden": [],
+      "expected_outcome": "applied",
+      "invalid_reason": null
+    },
+    {
+      "id": "pra-colloquial-valid-2",
+      "text": "Keep the low-latency slice ready for a bump to roughly 18 Mbps if the load prediction calls for it.",
+      "use_case": "UC1",
+      "phrasing": "colloquial",
+      "validity": "valid",
+      "expected_sst": 2,
+      "expected_target_mbps": 18.0,
+      "expected_window": null,
+      "tools_required": [
+        "record_intent",
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "tools_forbidden": [],
+      "expected_outcome": "applied",
+      "invalid_reason": null
+    },
+    {
+      "id": "pra-explicit-invalid-1",
+      "text": "Proactively adjust resources for slice SST=6 to sustain 10 Mbps based on predicted load.",
+      "use_case": "UC1",
+      "phrasing": "explicit",
+      "validity": "invalid",
+      "expected_sst": 6,
+      "expected_target_mbps": 10.0,
+      "expected_window": null,
+      "tools_required": [
+        "record_intent"
+      ],
+      "tools_forbidden": [
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "expected_outcome": "refused_or_corrected",
+      "invalid_reason": "unsupported SST (only 1 and 2 are provisioned)"
+    },
+    {
+      "id": "pra-explicit-invalid-2",
+      "text": "Reserve capacity on SST=2 for a predicted -5 Mbps peak in demand.",
+      "use_case": "UC1",
+      "phrasing": "explicit",
+      "validity": "invalid",
+      "expected_sst": 2,
+      "expected_target_mbps": -5.0,
+      "expected_window": null,
+      "tools_required": [
+        "record_intent"
+      ],
+      "tools_forbidden": [
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "expected_outcome": "refused_or_corrected",
+      "invalid_reason": "non-positive target_thp_mbps"
+    },
+    {
+      "id": "pra-colloquial-invalid-1",
+      "text": "The IoT slice might need more headroom soon — get it ready.",
+      "use_case": "UC1",
+      "phrasing": "colloquial",
+      "validity": "invalid",
+      "expected_sst": 3,
+      "expected_target_mbps": null,
+      "expected_window": null,
+      "tools_required": [
+        "record_intent"
+      ],
+      "tools_forbidden": [
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "expected_outcome": "refused_or_corrected",
+      "invalid_reason": "unsupported SST (MIoT=3 is a standardized SST but not provisioned in MINAS)"
+    },
+    {
+      "id": "pra-colloquial-invalid-2",
+      "text": "Basically turn off any guarantee on the critical slice — set it to 0 Mbps proactively.",
+      "use_case": "UC1",
+      "phrasing": "colloquial",
+      "validity": "invalid",
+      "expected_sst": 2,
+      "expected_target_mbps": 0.0,
+      "expected_window": null,
+      "tools_required": [
+        "record_intent"
+      ],
+      "tools_forbidden": [
+        "cn_nssmf_apply_qos",
+        "ran_nssmf_apply_resources"
+      ],
+      "expected_outcome": "refused_or_corrected",
+      "invalid_reason": "non-positive target_thp_mbps"
+    }
+  ]
+}

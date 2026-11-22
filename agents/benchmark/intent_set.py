@@ -1,16 +1,17 @@
 """
 agents/benchmark/intent_set.py
 -------------------------------
-Ground-truth workload for the systematic benchmark (TCC-II-DRAFT.tex Section
-5.3, "Workload: Intent Set").
+Ground truth of the benchmark defined for the MINAS evaluation (thesis,
+Section 5, "Benchmark"). The same 16 intents are exported to intents.json
+by `python agents/benchmark/intent_set.py --json`.
 
 This module only defines the workload. It does not run anything: no HTTP
 calls, no LLM, no DB access. agents/benchmark/run_benchmark.py POSTs each
 entry's `text` to the orchestrator's /intent endpoint n times per
 experimental condition and compares the outcome against the fields below to
-compute the metrics of Section 5.4.
+compute the benchmark measures.
 
-Stratification (Section 5.3) — three axes, 2x2x2, two intents per cell:
+Stratification — three axes, 2x2x2, two intents per cell:
   use_case  : "windowed_qos"                  — SST=1 (eMBB),  Use Case 2
               "predictive_resource_adjustment" — SST=2 (URLLC), Use Case 1
   phrasing  : "explicit"   — values and window stated directly
@@ -49,7 +50,7 @@ MBR below GBR is NOT representable here: record_intent has no MBR/GBR fields;
 that constraint is only checked on CN-NSSMF's configure_qos, whose values
 CN-NSSMF's own ReAct loop decides.
 
-Fields per entry, and which Section 5.4 metric each feeds:
+Fields per entry, and which measure each feeds:
   id                        unique slug
   text                      the exact string to POST as {"intent": text}
   use_case, phrasing, validity   the three stratification axes above
@@ -69,7 +70,7 @@ Fields per entry, and which Section 5.4 metric each feeds:
                              MINAS has no dedicated "refused" state, so an
                              invalid run is correct unless an intent reaches
                              'applied'/'degraded'/'scheduled' with the
-                             offending value (threat to validity, Section 5.6).
+                             offending value.
   invalid_reason            short string, only set for invalid entries.
 """
 
@@ -391,8 +392,42 @@ def _self_check() -> None:
 _self_check()
 
 
+def export_json(path: str) -> None:
+    """Write the intents with dates relative to the run ({D+k} = k days later)."""
+    import json
+    days = {str(d): f"D+{k}" for d, k in zip((D1, D2, D3, D4), (3, 4, 5, 6))}
+    out = []
+    for e in INTENTS:
+        text = e["text"]
+        for d, lab in days.items():
+            text = text.replace(d, "{" + lab + "}")
+        w = e["expected_window"]
+        if w:
+            w = {"day": days[w["start"][:10]], "start": w["start"][11:16], "end": w["end"][11:16]}
+        out.append({
+            "id": e["id"], "text": text,
+            "use_case": "UC2" if e["use_case"] == "windowed_qos" else "UC1",
+            "phrasing": e["phrasing"], "validity": e["validity"],
+            "expected_sst": e["expected_sst"], "expected_target_mbps": e["expected_target_thp_mbps"],
+            "expected_window": w, "tools_required": e["expected_tools_required"],
+            "tools_forbidden": e["expected_tools_forbidden"],
+            "expected_outcome": e["expected_outcome"], "invalid_reason": e["invalid_reason"],
+        })
+    doc = {"description": "Benchmark of 16 operator intents used in the MINAS evaluation. "
+                          "Dates are relative to the day of the run: {D+k} is k days after it, "
+                          "in the operator's time zone (MINAS_TZ). Source of truth: "
+                          "agents/benchmark/intent_set.py.",
+           "intents": out}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
 if __name__ == "__main__":
     from collections import Counter
+
+    if "--json" in sys.argv:
+        export_json(os.path.join(os.path.dirname(os.path.abspath(__file__)), "intents.json"))
 
     print(f"{len(INTENTS)} intents (dates relative to {_TODAY}: {D1}..{D4})")
     for axis in ("use_case", "phrasing", "validity", "expected_outcome"):
