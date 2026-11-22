@@ -1,6 +1,12 @@
-# environment — nunca commitar
+# ---------------------------------------------------------------
+# Repositorio publico: so o codigo do MINAS. Texto do TCC, notas,
+# dados de testes/lab e credenciais ficam fora.
+# ---------------------------------------------------------------
+
+# environment e credenciais — nunca commitar
 .env
 .env.example
+scripts/sims.lab.js
 
 # Claude Code
 .claude/
@@ -12,40 +18,32 @@ __pycache__/
 .venv/
 venv/
 
-# Logs
+# Logs e capturas
 *.log
 *.pcap
 
-# Benchmark run output (agents/benchmark/run_benchmark.py) — raw per-run data,
-# not source; regenerate via the runner rather than versioning it.
-agents/benchmark/results/
-!agents/benchmark/results/**/*.jsonl
-
-# Texto
-*.txt
-*.md
-*.tex
-# exceções: versionados mesmo com as regras acima (README traz o apêndice do TCC)
-!README.md
-!docs/figures/
-!agents/benchmark/plots.py
-
-# Docs
-*.pdf
-# Pastas do texto do TCC I e II (locais, não versionadas)
+# Texto do TCC, notas e anexos (handover, banca, lab, reunioes)
 tcc1/
 tcc2/
+contexto-minas/
+*.md
+*.txt
+*.tex
+*.pdf
+# excecoes
+!README.md
+!requirements.txt
 
-# lab runs (scripts/lab_collect.sh)
+# Dados de testes e do lab (regenerados pelos scripts)
 lab-data/
-!lab-data/
-!lab-data/*/
-!lab-data/*/probe/
-!lab-data/*/probe/*.jsonl
+lab-data-*/
+enforcement probe/
+agents/benchmark/results/
 
-# lab: configs do gNB do Miguel (hardware do lab) e SIMs reais
+# Scripts avulsos de analise dos dados do lab
+/c.py
+/check_metrics.py
+
+# Configs do hardware do lab
 gnb_ru_liteon*.yml
 srsran/gnb.lab.yaml
-
-# lab: credenciais reais dos chips (scripts/provision.lab.js carrega)
-scripts/sims.lab.js

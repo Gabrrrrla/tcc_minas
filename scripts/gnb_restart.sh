@@ -37,8 +37,27 @@ fi
 [ -n "${GNB_DIR:-}" ] && cd "$GNB_DIR"
 PIN=()
 [ -n "${GNB_CPUS:-}" ] && PIN=(taskset -c "$GNB_CPUS")
-: > "$LOG"   # (gnb_slicer.py also empties it before calling this)
+# Keep the console of the gNB that was just stopped: it holds the per-UE
+# throughput up to the restart. One file per run, <LOG>.<YYYYmmdd-HHMMSS>.
+if [ -s "$LOG" ]; then cp "$LOG" "$LOG.$(date +%Y%m%d-%H%M%S)"; fi
+: > "$LOG"
+# Every stdout line gets the server's epoch time in front ("1794255338.269 ..."),
+# so the per-UE throughput table of the console can be aligned with the intent
+# window and the restart gaps measured (agents/benchmark/lab_analysis.py).
+# stdbuf makes the gNB flush each line, otherwise the timestamps come in bursts.
+# GNB_STAMP=0 turns it off (plain file, as before).
+STAMP_PY='import sys,time
+for l in sys.stdin:
+    sys.stdout.write("%.3f %s" % (time.time(), l)); sys.stdout.flush()'
+BUF=()
+command -v stdbuf >/dev/null && BUF=(stdbuf -oL -eL)
+echo "gnb_restart.sh: $(date +%s.%N | cut -c1-14) starting $GNB_BIN -c $CFG" >&2
 # shellcheck disable=SC2086  # GNB_EXTRA_ARGS is a word list on purpose
-nohup "${PIN[@]}" "$GNB_BIN" -c "$CFG" ${GNB_EXTRA_ARGS:-} > "$LOG" 2>&1 < /dev/null &
-echo $! > "$PIDFILE"   # taskset execs the gnb, so $! is the gnb's own PID
+if [ "${GNB_STAMP:-1}" = 1 ] && command -v python3 >/dev/null; then
+  nohup "${PIN[@]}" "${BUF[@]}" "$GNB_BIN" -c "$CFG" ${GNB_EXTRA_ARGS:-} \
+    > >(exec python3 -u -c "$STAMP_PY" >> "$LOG") 2>&1 < /dev/null &
+else
+  nohup "${PIN[@]}" "$GNB_BIN" -c "$CFG" ${GNB_EXTRA_ARGS:-} > "$LOG" 2>&1 < /dev/null &
+fi
+echo $! > "$PIDFILE"   # taskset and stdbuf exec the gnb, so $! is the gnb's own PID
 disown

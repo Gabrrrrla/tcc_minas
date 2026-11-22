@@ -31,8 +31,9 @@ END=$(date -u +%s); START=$((END - MIN * 60))
 iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 OUT="lab-data/$(date +%Y%m%d-%H%M)_${LABEL}"
 mkdir -p "$OUT"/{db,logs,prometheus,gnb,probe,ue}
+NMISS=0
 ok()   { printf '  saved   %s\n' "$*"; }
-miss() { printf '  MISSING %s\n' "$*"; }
+miss() { printf '  MISSING %s\n' "$*"; NMISS=$((NMISS + 1)); }
 
 echo "== $OUT  ($(iso $START) .. $(iso $END))"
 
@@ -90,6 +91,20 @@ echo "-- gNB (only if this runs on the gNB host)"
 for f in "$GNB_CONFIG_OUT" "${GNB_TEMPLATE:-srsran/gnb.lab.yaml}" "$GNB_LOG"; do
   [ -n "$f" ] && [ -f "$f" ] && cp "$f" "$OUT/gnb/" && ok "gnb/$(basename "$f")"
 done
+# consoles of the gNB runs that ended in the range (gnb_restart.sh archives one
+# per restart, timestamped per line): the per-UE throughput lives here
+n=0
+for f in "$GNB_LOG".*; do
+  [ -f "$f" ] || continue
+  [ "$(stat -c %Y "$f")" -ge "$START" ] && cp "$f" "$OUT/gnb/" && n=$((n + 1))
+done
+[ "$n" -gt 0 ] && ok "gnb/$(basename "$GNB_LOG").* ($n archived gNB console(s))"
+if [ -f "$GNB_LOG" ] && ! head -c 200 "$GNB_LOG" | grep -qE '^[0-9]{10}\.[0-9]{3} '; then
+  miss "timestamps in $GNB_LOG (gnb_restart.sh without GNB_STAMP? the E2 analysis needs them)"
+fi
+for f in gnb_slicer.log /tmp/gnb_slicer.log; do
+  [ -f "$f" ] && cp "$f" "$OUT/gnb/" && ok "gnb/$(basename "$f")" && break
+done
 # the gNB's own log (all_level: info at 100 MHz) grows fast: keep only its tail
 if [ -f /tmp/gnb.log ]; then
   tail -c 50M /tmp/gnb.log > "$OUT/gnb/gnb.log.tail" && ok "gnb/gnb.log.tail (last 50 MB of /tmp/gnb.log)"
@@ -126,4 +141,9 @@ EOF
 ok "notes.md (preencha agora, enquanto lembra)"
 
 echo
+if [ "$NMISS" -gt 0 ]; then
+  echo "!! $NMISS item(s) MISSING above. Fix what you can and run this again before the next repetition."
+else
+  echo "all items saved."
+fi
 echo "next: check $OUT/ue/ and fill in $OUT/notes.md"

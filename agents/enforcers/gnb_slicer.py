@@ -104,8 +104,10 @@ def _render(ratios: dict[int, dict]) -> None:
 def _restart() -> tuple[int, float, bool]:
     """Restart the gNB and wait for READY_PATTERN in its log."""
     t0 = time.monotonic()
-    # empty the log first, so only the new gNB's start-up can match the pattern
-    open(GNB_LOG, "w").close()
+    # gnb_restart.sh stops the old gNB, archives its console (GNB_LOG.<time>)
+    # and empties GNB_LOG before starting the new one, so only the new
+    # start-up can match the pattern below.
+    print(f"[gnb-slicer] {time.time():.3f} restart begin", flush=True)
     rc = subprocess.call(RESTART_CMD, shell=True,
                          env={**os.environ, "GNB_CONFIG_OUT": CONFIG_OUT, "GNB_LOG": GNB_LOG})
     if rc != 0:
@@ -113,6 +115,7 @@ def _restart() -> tuple[int, float, bool]:
     while time.monotonic() - t0 < READY_TIMEOUT:
         with open(GNB_LOG, encoding="utf-8", errors="replace") as f:
             if READY_PATTERN in f.read():
+                print(f"[gnb-slicer] {time.time():.3f} restart ready", flush=True)
                 return 0, time.monotonic() - t0, True
         time.sleep(0.5)
     return 0, time.monotonic() - t0, False
